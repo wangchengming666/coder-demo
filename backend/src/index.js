@@ -12,17 +12,42 @@ const path = require('path');
 app.use(express.static(path.join(__dirname, '../../frontend/dist')));
 
 const PORT = process.env.PORT || 3000;
+
+// ─── Chain Configurations ─────────────────────────────────────────────────────
+
+const CHAIN_CONFIGS = {
+  bsc: {
+    primaryRpc: process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org',
+    fallbackRpc: process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org',
+    explorerUrl: (txHash) => `https://bscscan.com/tx/${txHash}`,
+    nativeSymbol: 'BNB',
+    chainName: 'BSC',
+    eip1559: false,
+  },
+  polygon: {
+    primaryRpc: process.env.POLYGON_RPC_PRIMARY || 'https://polygon-rpc.com',
+    fallbackRpc: process.env.POLYGON_RPC_FALLBACK || 'https://rpc.ankr.com/polygon',
+    explorerUrl: (txHash) => `https://polygonscan.com/tx/${txHash}`,
+    nativeSymbol: 'MATIC',
+    chainName: 'Polygon',
+    eip1559: true,
+  },
+};
+
+// Legacy env vars support
 const BSC_RPC_PRIMARY = process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org';
 const BSC_RPC_FALLBACK = process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org';
 
-async function getProvider() {
+async function getProvider(chainConfig) {
+  const primary = chainConfig ? chainConfig.primaryRpc : BSC_RPC_PRIMARY;
+  const fallback = chainConfig ? chainConfig.fallbackRpc : BSC_RPC_FALLBACK;
   try {
-    const provider = new ethers.JsonRpcProvider(BSC_RPC_PRIMARY);
+    const provider = new ethers.JsonRpcProvider(primary);
     await provider.getBlockNumber();
     return provider;
   } catch (e) {
     console.warn('Primary RPC failed, switching to fallback:', e.message);
-    return new ethers.JsonRpcProvider(BSC_RPC_FALLBACK);
+    return new ethers.JsonRpcProvider(fallback);
   }
 }
 
@@ -168,9 +193,38 @@ function getPanicSuggestion(code) {
   return suggestions[code] || '合约发生 Panic 错误，请联系合约开发者。';
 }
 
+// ─── EIP-1559 Gas Info ────────────────────────────────────────────────────────
+
+async function getEip1559GasInfo(provider) {
+  try {
+    const block = await provider.getBlock('latest');
+    if (!block || block.baseFeePerGas == null) return {};
+    const baseFee = parseFloat(ethers.formatUnits(block.baseFeePerGas, 'gwei'));
+    // maxPriorityFeePerGas via fee data
+    const feeData = await provider.getFeeData();
+    const maxPriorityFee = feeData.maxPriorityFeePerGas != null
+      ? parseFloat(ethers.formatUnits(feeData.maxPriorityFeePerGas, 'gwei'))
+      : null;
+    return { baseFee, maxPriorityFee };
+  } catch {
+    return {};
+  }
+}
+
 // Main API
 app.get('/api/v1/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
+  const chainKey = (req.query.chain || 'bsc').toLowerCase();
+
+  // Validate chain
+  const chainConfig = CHAIN_CONFIGS[chainKey];
+  if (!chainConfig) {
+    return res.status(400).json({
+      code: 400,
+      message: `不支持的链: ${chainKey}，当前支持: ${Object.keys(CHAIN_CONFIGS).join(', ')}`,
+      data: null,
+    });
+  }
 
   // Validate txHash format
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
@@ -182,7 +236,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
   }
 
   try {
-    const provider = await getProvider();
+    const provider = await getProvider(chainConfig);
 
     const [tx, receipt, currentBlock] = await Promise.all([
       provider.getTransaction(txHash),
@@ -199,27 +253,36 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       });
     }
 
+    // EIP-1559 extra fields
+    let eip1559Info = {};
+    if (chainConfig.eip1559) {
+      eip1559Info = await getEip1559GasInfo(provider);
+    }
+
     // PENDING
     if (!receipt) {
-      return res.json({
-        code: 200,
-        message: 'success',
-        data: {
-          txHash,
-          status: 'PENDING',
-          from: tx.from,
-          to: tx.to,
-          value: ethers.formatEther(tx.value),
-          valueSymbol: 'BNB',
-          valueRaw: tx.value.toString(),
-          gasLimit: tx.gasLimit.toString(),
-          gasPrice: ethers.formatUnits(tx.gasPrice, 'gwei'),
-          gasPriceUnit: 'Gwei',
-          nonce: tx.nonce,
-          inputData: tx.data,
-          explorerUrl: `https://bscscan.com/tx/${txHash}`,
-        },
-      });
+      const pendingData = {
+        txHash,
+        chain: chainKey,
+        chainName: chainConfig.chainName,
+        status: 'PENDING',
+        from: tx.from,
+        to: tx.to,
+        value: ethers.formatEther(tx.value),
+        valueSymbol: chainConfig.nativeSymbol,
+        valueRaw: tx.value.toString(),
+        gasLimit: tx.gasLimit.toString(),
+        gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : null,
+        gasPriceUnit: 'Gwei',
+        nonce: tx.nonce,
+        inputData: tx.data,
+        explorerUrl: chainConfig.explorerUrl(txHash),
+      };
+      if (chainConfig.eip1559) {
+        if (eip1559Info.baseFee != null) pendingData.baseFee = eip1559Info.baseFee;
+        if (eip1559Info.maxPriorityFee != null) pendingData.maxPriorityFee = eip1559Info.maxPriorityFee;
+      }
+      return res.json({ code: 200, message: 'success', data: pendingData });
     }
 
     // Get block for timestamp
@@ -242,6 +305,8 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
 
     const baseData = {
       txHash,
+      chain: chainKey,
+      chainName: chainConfig.chainName,
       status: receipt.status === 1 ? 'SUCCESS' : 'FAILED',
       blockNumber: receipt.blockNumber,
       blockHash: receipt.blockHash,
@@ -250,19 +315,24 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       from: tx.from,
       to: tx.to,
       value: ethers.formatEther(tx.value),
-      valueSymbol: 'BNB',
+      valueSymbol: chainConfig.nativeSymbol,
       valueRaw: tx.value.toString(),
       gasLimit: tx.gasLimit.toString(),
       gasUsed: gasUsed.toString(),
-      gasPrice: ethers.formatUnits(gasPrice, 'gwei'),
+      gasPrice: gasPrice ? ethers.formatUnits(gasPrice, 'gwei') : null,
       gasPriceUnit: 'Gwei',
       gasFee: ethers.formatEther(gasFeeWei),
-      gasFeeSymbol: 'BNB',
+      gasFeeSymbol: chainConfig.nativeSymbol,
       nonce: tx.nonce,
       inputData: tx.data,
       confirmations: currentBlock - receipt.blockNumber,
-      explorerUrl: `https://bscscan.com/tx/${txHash}`,
+      explorerUrl: chainConfig.explorerUrl(txHash),
     };
+
+    if (chainConfig.eip1559) {
+      if (eip1559Info.baseFee != null) baseData.baseFee = eip1559Info.baseFee;
+      if (eip1559Info.maxPriorityFee != null) baseData.maxPriorityFee = eip1559Info.maxPriorityFee;
+    }
 
     if (receipt.status === 1) {
       return res.json({ code: 200, message: 'success', data: baseData });
@@ -292,8 +362,6 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`TxTracer Backend running on http://localhost:${PORT}`);
-    console.log(`Primary RPC: ${BSC_RPC_PRIMARY}`);
-    console.log(`Fallback RPC: ${BSC_RPC_FALLBACK}`);
   });
 }
 

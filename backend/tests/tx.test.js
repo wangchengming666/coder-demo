@@ -392,3 +392,53 @@ describe('Health endpoint', () => {
     expect(res.body.status).toBe('ok');
   });
 });
+
+// ─── Polygon Chain Support ────────────────────────────────────────────────────
+
+describe('Polygon chain support', () => {
+  test('chain=polygon → valueSymbol is MATIC', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getFeeData = jest.fn().mockResolvedValue({ maxPriorityFeePerGas: 1500000000n });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=polygon`);
+    expect(res.body.code).toBe(200);
+    const data = res.body.data;
+    expect(data.valueSymbol).toBe('MATIC');
+    expect(data.gasFeeSymbol).toBe('MATIC');
+    expect(data.chain).toBe('polygon');
+    expect(data.chainName).toBe('Polygon');
+    expect(data.explorerUrl).toContain('polygonscan.com');
+  });
+
+  test('chain=polygon → explorerUrl contains polygonscan.com', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(null);
+    mockProvider.getFeeData = jest.fn().mockResolvedValue({ maxPriorityFeePerGas: 1500000000n });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=polygon`);
+    expect(res.body.data.explorerUrl).toContain('polygonscan.com');
+  });
+
+  test('chain=polygon PENDING → contains chain and chainName', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(null);
+    mockProvider.getFeeData = jest.fn().mockResolvedValue({ maxPriorityFeePerGas: 1500000000n });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=polygon`);
+    expect(res.body.data.chain).toBe('polygon');
+    expect(res.body.data.chainName).toBe('Polygon');
+    expect(res.body.data.valueSymbol).toBe('MATIC');
+  });
+
+  test('unsupported chain → 400', async () => {
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=unknown`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe(400);
+  });
+
+  test('default chain (no param) → BSC behavior (BNB symbol)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.valueSymbol).toBe('BNB');
+    expect(res.body.data.chain).toBe('bsc');
+  });
+});

@@ -1,6 +1,6 @@
-# TxTracer for BSC
+# TxTracer 多链交易查询工具
 
-> BSC 链上交易查询与失败原因分析工具
+> 支持多链的交易查询与失败原因分析工具（已支持 BSC、Polygon）
 
 不只告诉你「交易失败了」，还告诉你**为什么失败、怎么修复**。
 
@@ -10,7 +10,8 @@
 
 | 功能 | 说明 |
 |------|------|
-| 交易查询 | 输入 TxHash，一键查询 BSC 链上状态 |
+| 多链支持 | 支持 BSC、Polygon，通过 chain 参数切换 |
+| 交易查询 | 输入 TxHash，一键查询链上状态 |
 | 交易详情 | From / To / 金额 / Gas / 区块号 / 时间戳 / 确认数 |
 | 失败原因分析 | 自动解析 Revert Reason，给出中文失败原因与修复建议 |
 | 状态分类 | 覆盖 Pending / Success / Failed / Not Found 四种状态 |
@@ -95,7 +96,7 @@ npm run build
 ### 查询交易
 
 ```
-GET /api/v1/tx/:txHash
+GET /api/v1/tx/:txHash?chain=bsc
 ```
 
 **路径参数：**
@@ -103,6 +104,19 @@ GET /api/v1/tx/:txHash
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | txHash | String | 66 位十六进制交易哈希（0x 开头） |
+
+**查询参数：**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| chain | String | 否 | bsc | 链标识，支持 `bsc`、`polygon` |
+
+**支持的链：**
+
+| chain | 链名 | 原生代币 | 区块浏览器 | EIP-1559 |
+|-------|------|----------|------------|----------|
+| bsc | BSC | BNB | bscscan.com | 否 |
+| polygon | Polygon | MATIC | polygonscan.com | 是 |
 
 **响应示例 — 交易成功：**
 
@@ -208,12 +222,23 @@ block 为 null 时（极少情况），`datetime` 返回 `null`。
 
 ---
 
-## BSC RPC 节点
+## RPC 节点配置
+
+### BSC
 
 | 节点 | 地址 |
 |------|------|
 | 主节点 | https://bsc-dataseed1.binance.org |
 | 备用节点 | https://bsc-dataseed2.binance.org |
+
+### Polygon（ISSUE-005 新增）
+
+| 节点 | 地址 |
+|------|------|
+| 主节点 | https://polygon-rpc.com |
+| 备用节点 | https://rpc.ankr.com/polygon |
+
+Polygon 支持 EIP-1559，响应中包含 `baseFee`（Gwei）和 `maxPriorityFee`（Gwei）字段。
 
 主节点不可用时自动切换备用节点。
 
