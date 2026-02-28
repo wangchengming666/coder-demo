@@ -108,8 +108,7 @@ GET /api/v1/tx/:txHash
 
 ```json
 {
-  "code": 200,
-  "message": "success",
+  "success": true,
   "data": {
     "txHash": "0xabc123...def456",
     "status": "SUCCESS",
@@ -140,8 +139,7 @@ GET /api/v1/tx/:txHash
 
 ```json
 {
-  "code": 200,
-  "message": "success",
+  "success": true,
   "data": {
     "txHash": "0xabc123...def456",
     "status": "FAILED",
@@ -156,14 +154,26 @@ GET /api/v1/tx/:txHash
 }
 ```
 
-**响应状态码：**
+**响应格式：**
 
-| code | 说明 |
-|------|------|
-| 0 | 成功 |
-| 400 | txHash 格式错误 |
-| 404 | 交易不存在 |
-| 500 | 服务器内部错误 |
+成功响应：
+```json
+{ "success": true, "data": { ... } }
+```
+
+失败响应：
+```json
+{ "success": false, "error": { "code": "ERROR_CODE", "message": "..." } }
+```
+
+**错误码：**
+
+| 错误码 | HTTP 状态 | 说明 |
+|--------|-----------|------|
+| INVALID_TX_HASH | 400 | txHash 格式错误 |
+| TX_NOT_FOUND | 404 | 交易不存在 |
+| RPC_ERROR | 502 | RPC 调用失败 |
+| INTERNAL_ERROR | 500 | 服务器内部错误 |
 
 ---
 
