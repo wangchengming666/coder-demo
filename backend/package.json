@@ -1,0 +1,31 @@
+{
+  "name": "txtracer-backend",
+  "version": "1.0.0",
+  "description": "BSC Transaction Tracer Backend",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "jest --coverage --coverageThreshold='{\"global\":{\"lines\":80}}'"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "collectCoverageFrom": [
+      "src/**/*.js"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov"
+    ]
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.11.1",
+    "express": "^4.18.3"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.2.2"
+  }
+}
