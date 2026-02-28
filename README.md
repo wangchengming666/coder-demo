@@ -1,0 +1,234 @@
+# TxTracer for BSC
+
+> BSC 链上交易查询与失败原因分析工具
+
+不只告诉你「交易失败了」，还告诉你**为什么失败、怎么修复**。
+
+---
+
+## 功能特性
+
+| 功能 | 说明 |
+|------|------|
+| 交易查询 | 输入 TxHash，一键查询 BSC 链上状态 |
+| 交易详情 | From / To / 金额 / Gas / 区块号 / 时间戳 / 确认数 |
+| 失败原因分析 | 自动解析 Revert Reason，给出中文失败原因与修复建议 |
+| 状态分类 | 覆盖 Pending / Success / Failed / Not Found 四种状态 |
+| 快捷跳转 | 一键跳转 BscScan 区块浏览器 |
+| RPC 自动切换 | 主节点失败自动切换备用节点 |
+
+---
+
+## 技术栈
+
+- **后端**：Node.js + Express + ethers.js
+- **前端**：Vue 3 + Ant Design Vue + Vite
+
+---
+
+## 项目结构
+
+```
+coder-demo/
+├── backend/
+│   ├── src/
+│   │   └── index.js          # Express 服务入口，含查询逻辑与失败分析
+│   ├── tests/
+│   │   └── tx.test.js        # Jest 单元测试（覆盖率 95%+）
+│   ├── .env                  # 环境变量配置
+│   └── package.json
+└── frontend/
+    ├── src/
+    │   ├── api/
+    │   │   └── tx.js         # API 封装
+    │   ├── components/
+    │   │   └── TxBasicCard.vue  # 交易详情卡片组件
+    │   ├── App.vue            # 主页面
+    │   └── main.js
+    ├── vite.config.js         # 含 /api 代理配置
+    └── package.json
+```
+
+---
+
+## 快速启动
+
+### 1. 后端
+
+```bash
+cd backend
+npm install
+node src/index.js
+# 服务运行在 http://localhost:3000
+```
+
+**环境变量（backend/.env）：**
+
+```env
+BSC_RPC_PRIMARY=https://bsc-dataseed1.binance.org
+BSC_RPC_FALLBACK=https://bsc-dataseed2.binance.org
+PORT=3000
+```
+
+### 2. 前端（开发模式）
+
+```bash
+cd frontend
+npm install
+npm run dev
+# 页面运行在 http://localhost:5173
+```
+
+### 3. 前端（生产构建，由后端统一提供服务）
+
+```bash
+cd frontend
+npm run build
+# 构建产物输出到 frontend/dist/
+# 后端会自动提供静态文件服务，访问 http://localhost:3000 即可
+```
+
+---
+
+## API 接口
+
+### 查询交易
+
+```
+GET /api/v1/tx/:txHash
+```
+
+**路径参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| txHash | String | 66 位十六进制交易哈希（0x 开头） |
+
+**响应示例 — 交易成功：**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "txHash": "0xabc123...def456",
+    "status": "SUCCESS",
+    "blockNumber": 37500000,
+    "blockHash": "0xbbb...",
+    "timestamp": 1709100000,
+    "from": "0xSenderAddress",
+    "to": "0xReceiverAddress",
+    "value": "0.0001",
+    "valueSymbol": "BNB",
+    "valueRaw": "100000000000000",
+    "gasLimit": "21000",
+    "gasUsed": "21000",
+    "gasPrice": "3",
+    "gasPriceUnit": "Gwei",
+    "gasFee": "0.000063",
+    "gasFeeSymbol": "BNB",
+    "nonce": 88,
+    "inputData": "0x",
+    "confirmations": 500,
+    "explorerUrl": "https://bscscan.com/tx/0xabc123..."
+  }
+}
+```
+
+**响应示例 — 交易失败（额外返回 failureInfo）：**
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "txHash": "0xabc123...def456",
+    "status": "FAILED",
+    "failureInfo": {
+      "errorCategory": "CONTRACT_REVERT",
+      "errorCategoryDesc": "合约执行回滚",
+      "revertReason": "ERC20: transfer amount exceeds balance",
+      "revertReasonRaw": "0x08c379a0...",
+      "suggestion": "请检查您的代币余额是否充足。"
+    }
+  }
+}
+```
+
+**响应状态码：**
+
+| code | 说明 |
+|------|------|
+| 0 | 成功 |
+| 400 | txHash 格式错误 |
+| 404 | 交易不存在 |
+| 500 | 服务器内部错误 |
+
+### 健康检查
+
+```
+GET /health
+```
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+## 失败原因分析
+
+后端通过 `eth_call` 重放失败交易，解析 revert data，分为四种错误类型：
+
+| 错误类型 | 触发条件 | 说明 |
+|----------|----------|------|
+| `OUT_OF_GAS` | gasUsed ≥ gasLimit | Gas 耗尽，建议提高 gasLimit |
+| `CONTRACT_REVERT` | revert data 以 `0x08c379a0` 开头 | 合约主动 revert，解码 Error(string) |
+| `PANIC` | revert data 以 `0x4e487b71` 开头 | Solidity Panic 错误，解析错误码 |
+| `UNKNOWN` | 其他情况 | 返回原始 revert data |
+
+**支持的 PANIC 错误码：**
+
+| 错误码 | 含义 |
+|--------|------|
+| 0 | 断言失败 |
+| 1 | 算术溢出/下溢 |
+| 17 | 数组越界访问 |
+| 18 | 除以零 |
+| 32 | 枚举值越界 |
+| 34 | 空数组执行 pop() |
+| 49 | 无效跳转目标 |
+| 50 | 调用无效合约 |
+| 65 | 内存分配失败 |
+| 81 | 访问未初始化变量 |
+
+---
+
+## 单元测试
+
+```bash
+cd backend
+npm test
+```
+
+测试覆盖率：
+
+| 指标 | 覆盖率 |
+|------|--------|
+| Lines | 95.5% |
+| Statements | 94.94% |
+| Branches | 92.2% |
+| Functions | 85.71% |
+
+覆盖场景：txHash 格式校验、PENDING/SUCCESS/FAILED 状态、OUT_OF_GAS、CONTRACT_REVERT（8 种 reason）、PANIC（6 种 code）、UNKNOWN、500 错误处理，共 35 个测试用例。
+
+---
+
+## BSC RPC 节点
+
+| 节点 | 地址 |
+|------|------|
+| 主节点 | https://bsc-dataseed1.binance.org |
+| 备用节点 | https://bsc-dataseed2.binance.org |
+
+主节点不可用时自动切换备用节点。
