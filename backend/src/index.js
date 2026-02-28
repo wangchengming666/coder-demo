@@ -175,9 +175,11 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
   // Validate txHash format
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     return res.status(400).json({
-      code: 400,
-      message: '无效的交易哈希格式，请输入 0x 开头的 64 位十六进制字符串',
-      data: null,
+      success: false,
+      error: {
+        code: 'INVALID_TX_HASH',
+        message: '无效的交易哈希格式，请输入 0x 开头的 64 位十六进制字符串',
+      },
     });
   }
 
@@ -192,18 +194,19 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
 
     // Not found
     if (!tx) {
-      return res.json({
-        code: 404,
-        message: '未找到该交易，请确认哈希是否正确或交易是否已广播',
-        data: null,
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'TX_NOT_FOUND',
+          message: '未找到该交易，请确认哈希是否正确或交易是否已广播',
+        },
       });
     }
 
     // PENDING
     if (!receipt) {
       return res.json({
-        code: 200,
-        message: 'success',
+        success: true,
         data: {
           txHash,
           status: 'PENDING',
@@ -265,23 +268,24 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     };
 
     if (receipt.status === 1) {
-      return res.json({ code: 200, message: 'success', data: baseData });
+      return res.json({ success: true, data: baseData });
     }
 
     // Failed — analyze
     const failureInfo = await analyzeFailure(provider, tx, receipt);
     return res.json({
-      code: 200,
-      message: 'success',
+      success: true,
       data: { ...baseData, failureInfo },
     });
 
   } catch (err) {
     console.error('Error processing tx:', err);
     return res.status(500).json({
-      code: 500,
-      message: `服务器内部错误: ${err.message}`,
-      data: null,
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `服务器内部错误: ${err.message}`,
+      },
     });
   }
 });
