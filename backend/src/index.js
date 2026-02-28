@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { ethers } = require('ethers');
+const { randomUUID } = require('crypto');
 
 const app = express();
 app.use(cors());
@@ -39,6 +40,103 @@ const PANIC_CODES = {
   65: '内存分配失败 (Memory allocation failed)',
   81: '访问未初始化变量 (Access to uninitialized variable)',
 };
+
+// ─── ERC-20 Token Transfer Parsing ───────────────────────────────────────────
+
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+// ERC-20 minimal ABI for symbol and decimals
+const ERC20_ABI = [
+  'function symbol() view returns (string)',
+  'function decimals() view returns (uint8)',
+];
+
+// Token info cache: address → { symbol, decimals, cachedAt }
+const tokenCache = new Map();
+const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function getTokenInfo(provider, contractAddress) {
+  const now = Date.now();
+  const cached = tokenCache.get(contractAddress.toLowerCase());
+  if (cached && now - cached.cachedAt < TOKEN_CACHE_TTL_MS) {
+    return { symbol: cached.symbol, decimals: cached.decimals };
+  }
+
+  try {
+    const contract = new ethers.Contract(contractAddress, ERC20_ABI, provider);
+    const [symbol, decimals] = await Promise.all([
+      contract.symbol(),
+      contract.decimals(),
+    ]);
+    const info = { symbol: String(symbol), decimals: Number(decimals), cachedAt: now };
+    tokenCache.set(contractAddress.toLowerCase(), info);
+    return { symbol: info.symbol, decimals: info.decimals };
+  } catch (e) {
+    // fallback if contract calls fail
+    return { symbol: 'UNKNOWN', decimals: 18 };
+  }
+}
+
+/**
+ * Parse ERC-20 Transfer events from receipt logs.
+ * @param {object} provider
+ * @param {Array} logs  receipt.logs
+ * @returns {Promise<Array>} tokenTransfers
+ */
+async function parseTokenTransfers(provider, logs) {
+  if (!logs || logs.length === 0) return [];
+
+  const transferLogs = logs.filter(
+    (log) => log.topics && log.topics[0] && log.topics[0].toLowerCase() === ERC20_TRANSFER_TOPIC
+  );
+
+  if (transferLogs.length === 0) return [];
+
+  const transfers = await Promise.all(
+    transferLogs.map(async (log) => {
+      try {
+        const contractAddress = log.address;
+
+        // topic[1] = from (padded 32 bytes), topic[2] = to (padded 32 bytes)
+        const fromPadded = log.topics[1];
+        const toPadded = log.topics[2];
+        const from = '0x' + fromPadded.slice(26); // last 20 bytes
+        const to = '0x' + toPadded.slice(26);
+
+        // data = value (uint256 hex)
+        const valueRaw = BigInt(log.data).toString();
+
+        const { symbol, decimals } = await getTokenInfo(provider, contractAddress);
+
+        // Format value with decimals
+        const valueBig = BigInt(log.data);
+        const divisor = BigInt(10) ** BigInt(decimals);
+        const intPart = valueBig / divisor;
+        const fracPart = valueBig % divisor;
+        const fracStr = fracPart.toString().padStart(decimals, '0');
+        // Trim trailing zeros, keep at least 2 decimal places
+        const trimmedFrac = fracStr.replace(/0+$/, '') || '00';
+        const value = `${intPart}.${trimmedFrac.length < 2 ? trimmedFrac.padEnd(2, '0') : trimmedFrac}`;
+
+        return {
+          contractAddress,
+          from: ethers.getAddress(from),
+          to: ethers.getAddress(to),
+          value,
+          valueRaw,
+          symbol,
+          decimals,
+        };
+      } catch (e) {
+        return null;
+      }
+    })
+  );
+
+  return transfers.filter(Boolean);
+}
+
+// ─── Failure Analysis ─────────────────────────────────────────────────────────
 
 async function analyzeFailure(provider, tx, receipt) {
   const gasUsed = receipt.gasUsed;
@@ -171,11 +269,14 @@ function getPanicSuggestion(code) {
 // Main API
 app.get('/api/v1/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
+  const requestId = randomUUID();
+  console.log(`[${requestId}] Request: ${txHash}`);
 
   // Validate txHash format
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     return res.status(400).json({
       code: 400,
+      requestId,
       message: '无效的交易哈希格式，请输入 0x 开头的 64 位十六进制字符串',
       data: null,
     });
@@ -194,6 +295,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     if (!tx) {
       return res.json({
         code: 404,
+        requestId,
         message: '未找到该交易，请确认哈希是否正确或交易是否已广播',
         data: null,
       });
@@ -203,6 +305,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     if (!receipt) {
       return res.json({
         code: 200,
+        requestId,
         message: 'success',
         data: {
           txHash,
@@ -240,6 +343,9 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const gasPrice = tx.gasPrice;
     const gasFeeWei = gasUsed * gasPrice;
 
+    // Parse ERC-20 token transfers from logs
+    const tokenTransfers = await parseTokenTransfers(provider, receipt.logs);
+
     const baseData = {
       txHash,
       status: receipt.status === 1 ? 'SUCCESS' : 'FAILED',
@@ -262,33 +368,36 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       inputData: tx.data,
       confirmations: currentBlock - receipt.blockNumber,
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
+      tokenTransfers,
     };
 
     if (receipt.status === 1) {
-      return res.json({ code: 200, message: 'success', data: baseData });
+      return res.json({ code: 200, requestId, message: 'success', data: baseData });
     }
 
     // Failed — analyze
     const failureInfo = await analyzeFailure(provider, tx, receipt);
     return res.json({
       code: 200,
+      requestId,
       message: 'success',
       data: { ...baseData, failureInfo },
     });
 
   } catch (err) {
-    console.error('Error processing tx:', err);
+    console.error(`[${requestId}] Error:`, err);
     return res.status(500).json({
       code: 500,
+      requestId,
       message: `服务器内部错误: ${err.message}`,
       data: null,
     });
   }
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => { const requestId = randomUUID(); res.json({ status: 'ok', requestId }); });
 
-// Export app for testing; only start server if run directly
+// Export for testing; only start server if run directly
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`TxTracer Backend running on http://localhost:${PORT}`);
@@ -297,4 +406,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app };
+module.exports = { app, parseTokenTransfers, getTokenInfo, tokenCache, TOKEN_CACHE_TTL_MS };

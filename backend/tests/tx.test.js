@@ -16,27 +16,36 @@ const mockProvider = {
   call: jest.fn(),
 };
 
-const MockJsonRpcProvider = jest.fn(() => mockProvider);
-
-// Mock ethers: keep everything real EXCEPT ethers.JsonRpcProvider
+// Mock ethers: keep everything real EXCEPT ethers.JsonRpcProvider and ethers.Contract
 jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers');
   const MockJRP = jest.fn(() => mockProvider);
+  // mockContract will be set per test
+  const MockContract = jest.fn(() => mockContractInstance);
   return {
     ...actual,
     ethers: {
       ...actual.ethers,
       JsonRpcProvider: MockJRP,
+      Contract: MockContract,
     },
   };
 });
 
-// Grab the mocked JsonRpcProvider reference
+// Grab the mocked references
 const { ethers: mockedEthers } = require('ethers');
+
+// Default mock contract instance (for ERC-20 symbol/decimals)
+const mockContractInstance = {
+  symbol: jest.fn(),
+  decimals: jest.fn(),
+};
+
 const VALID_TX_HASH = '0x' + 'a'.repeat(64);
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 // Load app after mock is configured
-const { app } = require('../src/index');
+const { app, parseTokenTransfers, tokenCache, TOKEN_CACHE_TTL_MS } = require('../src/index');
 
 // Base tx object
 function makeTx(overrides = {}) {
@@ -59,18 +68,39 @@ function makeReceipt(status = 1, gasUsed = 21000n, overrides = {}) {
     blockNumber: 999,
     blockHash: '0x' + 'b'.repeat(64),
     gasUsed,
+    logs: [],
     ...overrides,
+  };
+}
+
+/**
+ * Build a synthetic ERC-20 Transfer log entry.
+ */
+function makeTransferLog(contractAddress, from, to, valueBigInt) {
+  const padAddress = (addr) => '0x' + '0'.repeat(24) + addr.replace('0x', '').toLowerCase();
+  return {
+    address: contractAddress,
+    topics: [
+      ERC20_TRANSFER_TOPIC,
+      padAddress(from),
+      padAddress(to),
+    ],
+    data: '0x' + valueBigInt.toString(16).padStart(64, '0'),
   };
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
+  tokenCache.clear();
   mockProvider.getBlockNumber.mockResolvedValue(1000);
   mockProvider.getTransaction.mockResolvedValue(null);
   mockProvider.getTransactionReceipt.mockResolvedValue(null);
   mockProvider.getBlock.mockResolvedValue({ timestamp: 1700000000 });
   mockProvider.call.mockResolvedValue('0x');
   mockedEthers.JsonRpcProvider.mockReturnValue(mockProvider);
+  // Default contract mock: USDT 18 decimals
+  mockContractInstance.symbol.mockResolvedValue('USDT');
+  mockContractInstance.decimals.mockResolvedValue(18);
 });
 
 // ─── txHash format validation ─────────────────────────────────────────────────
@@ -115,7 +145,6 @@ describe('txHash format validation', () => {
 
 describe('Not Found', () => {
   test('tx === null → code 404 in body', async () => {
-    // getTransaction returns null (default)
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(404);
@@ -129,7 +158,6 @@ describe('Not Found', () => {
 describe('PENDING status', () => {
   test('receipt === null → PENDING', async () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
-    // getTransactionReceipt stays null (default)
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
     expect(res.body.code).toBe(200);
     const data = res.body.data;
@@ -333,10 +361,6 @@ describe('Server error handling', () => {
     mockProvider.getTransaction.mockRejectedValue(new Error('network error'));
     mockProvider.getTransactionReceipt.mockRejectedValue(new Error('network error'));
     mockProvider.getBlockNumber.mockRejectedValue(new Error('network error'));
-    // Both primary and fallback use same mockProvider, so fallback will also fail on getBlockNumber
-    // Actually: primary fails → fallback new JsonRpcProvider → returns mockProvider → getBlockNumber throws in getProvider... wait no
-    // getProvider catches getBlockNumber failure → returns fallback provider (mockProvider again)
-    // Then Promise.all: getTransaction rejects → catch → 500
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
     expect(res.status).toBe(500);
     expect(res.body.code).toBe(500);
@@ -390,5 +414,230 @@ describe('Health endpoint', () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
+  });
+});
+
+// ─── requestId field ──────────────────────────────────────────────────────────
+
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+describe('requestId field', () => {
+  test('400 response contains requestId (UUID v4)', async () => {
+    const res = await request(app).get('/api/v1/tx/0xshort');
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('404 response contains requestId (UUID v4)', async () => {
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.code).toBe(404);
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('PENDING response contains requestId (UUID v4)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('PENDING');
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('SUCCESS response contains requestId (UUID v4)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('SUCCESS');
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('FAILED response contains requestId (UUID v4)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 21000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('FAILED');
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('500 response contains requestId (UUID v4)', async () => {
+    mockProvider.getTransaction.mockRejectedValue(new Error('network error'));
+    mockProvider.getTransactionReceipt.mockRejectedValue(new Error('network error'));
+    mockProvider.getBlockNumber.mockRejectedValue(new Error('network error'));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.status).toBe(500);
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('each request gets a unique requestId', async () => {
+    const res1 = await request(app).get('/api/v1/tx/0xshort');
+    const res2 = await request(app).get('/api/v1/tx/0xshort');
+    expect(res1.body.requestId).not.toBe(res2.body.requestId);
+  });
+});
+
+// ─── ERC-20 Token Transfer Parsing ───────────────────────────────────────────
+
+describe('tokenTransfers field - no ERC-20 logs', () => {
+  test('receipt with empty logs → tokenTransfers is empty array', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n, { logs: [] }));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data).toHaveProperty('tokenTransfers');
+    expect(res.body.data.tokenTransfers).toEqual([]);
+  });
+
+  test('receipt with non-ERC20 logs → tokenTransfers is empty array', async () => {
+    const nonTransferLog = {
+      address: '0x' + 'c'.repeat(40),
+      topics: ['0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'],
+      data: '0x' + '0'.repeat(64),
+    };
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n, { logs: [nonTransferLog] }));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.tokenTransfers).toEqual([]);
+  });
+});
+
+describe('tokenTransfers field - with ERC-20 Transfer events', () => {
+  const CONTRACT_ADDR = '0x55d398326f99059fF775485246999027B3197955';
+  const FROM_ADDR = '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  const TO_ADDR = '0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+
+  test('single ERC-20 Transfer → correct tokenTransfers entry', async () => {
+    const value = 100n * (10n ** 18n); // 100 USDT (18 decimals)
+    const log = makeTransferLog(CONTRACT_ADDR, FROM_ADDR, TO_ADDR, value);
+
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n, { logs: [log] }));
+    mockContractInstance.symbol.mockResolvedValue('USDT');
+    mockContractInstance.decimals.mockResolvedValue(18);
+
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const transfers = res.body.data.tokenTransfers;
+
+    expect(transfers).toHaveLength(1);
+    expect(transfers[0].contractAddress).toBe(CONTRACT_ADDR);
+    expect(transfers[0].symbol).toBe('USDT');
+    expect(transfers[0].decimals).toBe(18);
+    expect(transfers[0].valueRaw).toBe(value.toString());
+    expect(transfers[0].value).toBe('100.00');
+  });
+
+  test('multiple ERC-20 Transfers → all returned', async () => {
+    const CONTRACT2 = '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d';
+    const val1 = 50n * (10n ** 18n);
+    const val2 = 200n * (10n ** 18n);
+    const log1 = makeTransferLog(CONTRACT_ADDR, FROM_ADDR, TO_ADDR, val1);
+    const log2 = makeTransferLog(CONTRACT2, TO_ADDR, FROM_ADDR, val2);
+
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n, { logs: [log1, log2] }));
+    mockContractInstance.symbol.mockResolvedValue('USDC');
+    mockContractInstance.decimals.mockResolvedValue(18);
+
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const transfers = res.body.data.tokenTransfers;
+    expect(transfers).toHaveLength(2);
+  });
+
+  test('failed tx with ERC-20 transfer logs → tokenTransfers included', async () => {
+    const value = 10n * (10n ** 18n);
+    const log = makeTransferLog(CONTRACT_ADDR, FROM_ADDR, TO_ADDR, value);
+
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 100000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 50000n, { logs: [log] }));
+    mockProvider.call.mockResolvedValue('0x');
+    mockContractInstance.symbol.mockResolvedValue('USDT');
+    mockContractInstance.decimals.mockResolvedValue(18);
+
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('FAILED');
+    expect(res.body.data).toHaveProperty('tokenTransfers');
+    expect(res.body.data.tokenTransfers).toHaveLength(1);
+  });
+});
+
+describe('ERC-20 token info cache', () => {
+  const CONTRACT_ADDR = '0x55d398326f99059fF775485246999027B3197955';
+  const FROM_ADDR = '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  const TO_ADDR = '0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+
+  test('second call uses cache, not contract', async () => {
+    const value = 100n * (10n ** 18n);
+    const log1 = makeTransferLog(CONTRACT_ADDR, FROM_ADDR, TO_ADDR, value);
+    const log2 = makeTransferLog(CONTRACT_ADDR, FROM_ADDR, TO_ADDR, value);
+
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt
+      .mockResolvedValueOnce(makeReceipt(1, 21000n, { logs: [log1] }))
+      .mockResolvedValueOnce(makeReceipt(1, 21000n, { logs: [log2] }));
+    mockContractInstance.symbol.mockResolvedValue('USDT');
+    mockContractInstance.decimals.mockResolvedValue(18);
+
+    // First request
+    await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const callCount1 = mockContractInstance.symbol.mock.calls.length;
+
+    // Second request — should use cache
+    await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const callCount2 = mockContractInstance.symbol.mock.calls.length;
+
+    expect(callCount2).toBe(callCount1); // no extra contract call
+  });
+
+  test('expired cache → re-fetches from contract', async () => {
+    const value = 100n * (10n ** 18n);
+    const log = makeTransferLog(CONTRACT_ADDR, FROM_ADDR, TO_ADDR, value);
+
+    // Manually insert an expired cache entry
+    tokenCache.set(CONTRACT_ADDR.toLowerCase(), {
+      symbol: 'OLD',
+      decimals: 18,
+      cachedAt: Date.now() - TOKEN_CACHE_TTL_MS - 1000,
+    });
+
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n, { logs: [log] }));
+    mockContractInstance.symbol.mockResolvedValue('USDT');
+    mockContractInstance.decimals.mockResolvedValue(18);
+
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.tokenTransfers[0].symbol).toBe('USDT');
+    expect(mockContractInstance.symbol).toHaveBeenCalled();
+  });
+});
+
+describe('parseTokenTransfers - edge cases', () => {
+  test('empty logs array → empty array', async () => {
+    const result = await parseTokenTransfers(mockProvider, []);
+    expect(result).toEqual([]);
+  });
+
+  test('null/undefined logs → empty array', async () => {
+    const result = await parseTokenTransfers(mockProvider, null);
+    expect(result).toEqual([]);
+  });
+
+  test('log with wrong topic[0] → ignored', async () => {
+    const badLog = {
+      address: '0x' + 'a'.repeat(40),
+      topics: ['0x1234000000000000000000000000000000000000000000000000000000000000'],
+      data: '0x' + '0'.repeat(64),
+    };
+    const result = await parseTokenTransfers(mockProvider, [badLog]);
+    expect(result).toEqual([]);
+  });
+
+  test('contract call failure → UNKNOWN symbol with fallback', async () => {
+    mockContractInstance.symbol.mockRejectedValue(new Error('call failed'));
+    mockContractInstance.decimals.mockRejectedValue(new Error('call failed'));
+
+    const log = makeTransferLog(
+      '0x' + 'e'.repeat(40),
+      '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      '0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+      1000n
+    );
+    const result = await parseTokenTransfers(mockProvider, [log]);
+    expect(result).toHaveLength(1);
+    expect(result[0].symbol).toBe('UNKNOWN');
   });
 });

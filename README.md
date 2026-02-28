@@ -104,7 +104,7 @@ GET /api/v1/tx/:txHash
 |------|------|------|
 | txHash | String | 66 位十六进制交易哈希（0x 开头） |
 
-**响应示例 — 交易成功：**
+**响应示例 — 交易成功（含 ERC-20 转账）：**
 
 ```json
 {
@@ -131,7 +131,18 @@ GET /api/v1/tx/:txHash
     "inputData": "0x",
     "confirmations": 500,
     "explorerUrl": "https://bscscan.com/tx/0xabc123...",
-    "datetime": "2026-02-28 21:51:25"
+    "datetime": "2026-02-28 21:51:25",
+    "tokenTransfers": [
+      {
+        "contractAddress": "0x55d398326f99059fF775485246999027B3197955",
+        "from": "0xSenderAddress",
+        "to": "0xReceiverAddress",
+        "value": "100.00",
+        "valueRaw": "100000000000000000000",
+        "symbol": "USDT",
+        "decimals": 18
+      }
+    ]
   }
 }
 ```
@@ -196,6 +207,27 @@ GET /api/v1/tx/:txHash
 ---
 
 ## 字段说明
+
+### tokenTransfers 字段
+所有包含区块信息的响应（SUCCESS / FAILED）均返回 `tokenTransfers` 字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| tokenTransfers | Array | ERC-20 代币转账列表，无转账时为空数组 `[]` |
+| tokenTransfers[].contractAddress | String | 代币合约地址 |
+| tokenTransfers[].from | String | 转出地址（校验和格式） |
+| tokenTransfers[].to | String | 转入地址（校验和格式） |
+| tokenTransfers[].value | String | 格式化后的转账金额（含小数点） |
+| tokenTransfers[].valueRaw | String | 原始金额（最小单位，如 wei） |
+| tokenTransfers[].symbol | String | 代币符号，如 `"USDT"`、`"USDC"` |
+| tokenTransfers[].decimals | Number | 代币精度 |
+
+**解析规则：**
+- 扫描 `receipt.logs`，过滤 `topic[0]` == ERC-20 Transfer 事件签名（`0xddf252ad...`）
+- `from` = topic[1]，`to` = topic[2]，`value` = data 字段（uint256）
+- 通过调用代币合约获取 `symbol` 和 `decimals`，结果缓存 **5 分钟**以减少 RPC 调用
+
+---
 
 ### datetime 字段
 所有包含区块信息的响应（SUCCESS / FAILED）均返回 `datetime` 字段：
