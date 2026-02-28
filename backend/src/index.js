@@ -12,19 +12,69 @@ const path = require('path');
 app.use(express.static(path.join(__dirname, '../../frontend/dist')));
 
 const PORT = process.env.PORT || 3000;
-const BSC_RPC_PRIMARY = process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org';
-const BSC_RPC_FALLBACK = process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org';
 
-async function getProvider() {
+// ─── Chain Configuration ──────────────────────────────────────────────────────
+
+const CHAIN_CONFIG = {
+  bsc: {
+    name: 'BSC',
+    rpcPrimary: process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org',
+    rpcFallback: process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org',
+    nativeSymbol: 'BNB',
+    explorerTx: 'https://bscscan.com/tx/',
+  },
+  op: {
+    name: 'Optimism',
+    rpcPrimary: process.env.OP_RPC_PRIMARY || 'https://mainnet.optimism.io',
+    rpcFallback: process.env.OP_RPC_FALLBACK || 'https://rpc.ankr.com/optimism',
+    nativeSymbol: 'ETH',
+    explorerTx: 'https://optimistic.etherscan.io/tx/',
+  },
+};
+
+// GasPriceOracle contract for OP Stack L1 fee
+const GAS_PRICE_ORACLE_ADDRESS = '0x420000000000000000000000000000000000000F';
+const GAS_PRICE_ORACLE_ABI = [
+  'function getL1Fee(bytes memory _data) external view returns (uint256)',
+  'function getL1GasUsed(bytes memory _data) external view returns (uint256)',
+];
+
+// ─── Provider ─────────────────────────────────────────────────────────────────
+
+async function getProvider(chain = 'bsc') {
+  const config = CHAIN_CONFIG[chain];
+  if (!config) throw new Error(`Unsupported chain: ${chain}`);
   try {
-    const provider = new ethers.JsonRpcProvider(BSC_RPC_PRIMARY);
+    const provider = new ethers.JsonRpcProvider(config.rpcPrimary);
     await provider.getBlockNumber();
     return provider;
   } catch (e) {
-    console.warn('Primary RPC failed, switching to fallback:', e.message);
-    return new ethers.JsonRpcProvider(BSC_RPC_FALLBACK);
+    console.warn(`Primary RPC failed for chain ${chain}, switching to fallback:`, e.message);
+    return new ethers.JsonRpcProvider(config.rpcFallback);
   }
 }
+
+// ─── OP Stack L1 Fee ──────────────────────────────────────────────────────────
+
+async function getOptimismL1Fee(provider, txData) {
+  try {
+    const oracle = new ethers.Contract(GAS_PRICE_ORACLE_ADDRESS, GAS_PRICE_ORACLE_ABI, provider);
+    const [l1Fee, l1GasUsed] = await Promise.all([
+      oracle.getL1Fee(txData),
+      oracle.getL1GasUsed(txData),
+    ]);
+    return {
+      l1Fee: ethers.formatEther(l1Fee),
+      l1FeeRaw: l1Fee.toString(),
+      l1GasUsed: l1GasUsed.toString(),
+    };
+  } catch (e) {
+    console.warn('Failed to get Optimism L1 fee:', e.message);
+    return { l1Fee: null, l1FeeRaw: null, l1GasUsed: null };
+  }
+}
+
+// ─── Failure Analysis ─────────────────────────────────────────────────────────
 
 const PANIC_CODES = {
   0: '断言失败 (Assert Failed)',
@@ -168,9 +218,20 @@ function getPanicSuggestion(code) {
   return suggestions[code] || '合约发生 Panic 错误，请联系合约开发者。';
 }
 
-// Main API
+// ─── Main API ─────────────────────────────────────────────────────────────────
+
 app.get('/api/v1/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
+  const chain = (req.query.chain || 'bsc').toLowerCase();
+
+  // Validate chain
+  if (!CHAIN_CONFIG[chain]) {
+    return res.status(400).json({
+      code: 400,
+      message: `不支持的链: ${chain}，当前支持: ${Object.keys(CHAIN_CONFIG).join(', ')}`,
+      data: null,
+    });
+  }
 
   // Validate txHash format
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
@@ -181,8 +242,10 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     });
   }
 
+  const chainConfig = CHAIN_CONFIG[chain];
+
   try {
-    const provider = await getProvider();
+    const provider = await getProvider(chain);
 
     const [tx, receipt, currentBlock] = await Promise.all([
       provider.getTransaction(txHash),
@@ -206,18 +269,20 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
         message: 'success',
         data: {
           txHash,
+          chain,
+          chainName: chainConfig.name,
           status: 'PENDING',
           from: tx.from,
           to: tx.to,
           value: ethers.formatEther(tx.value),
-          valueSymbol: 'BNB',
+          valueSymbol: chainConfig.nativeSymbol,
           valueRaw: tx.value.toString(),
           gasLimit: tx.gasLimit.toString(),
           gasPrice: ethers.formatUnits(tx.gasPrice, 'gwei'),
           gasPriceUnit: 'Gwei',
           nonce: tx.nonce,
           inputData: tx.data,
-          explorerUrl: `https://bscscan.com/tx/${txHash}`,
+          explorerUrl: `${chainConfig.explorerTx}${txHash}`,
         },
       });
     }
@@ -242,6 +307,8 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
 
     const baseData = {
       txHash,
+      chain,
+      chainName: chainConfig.name,
       status: receipt.status === 1 ? 'SUCCESS' : 'FAILED',
       blockNumber: receipt.blockNumber,
       blockHash: receipt.blockHash,
@@ -250,19 +317,25 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       from: tx.from,
       to: tx.to,
       value: ethers.formatEther(tx.value),
-      valueSymbol: 'BNB',
+      valueSymbol: chainConfig.nativeSymbol,
       valueRaw: tx.value.toString(),
       gasLimit: tx.gasLimit.toString(),
       gasUsed: gasUsed.toString(),
       gasPrice: ethers.formatUnits(gasPrice, 'gwei'),
       gasPriceUnit: 'Gwei',
       gasFee: ethers.formatEther(gasFeeWei),
-      gasFeeSymbol: 'BNB',
+      gasFeeSymbol: chainConfig.nativeSymbol,
       nonce: tx.nonce,
       inputData: tx.data,
       confirmations: currentBlock - receipt.blockNumber,
-      explorerUrl: `https://bscscan.com/tx/${txHash}`,
+      explorerUrl: `${chainConfig.explorerTx}${txHash}`,
     };
+
+    // OP Stack: fetch L1 fee
+    if (chain === 'op') {
+      const l1FeeInfo = await getOptimismL1Fee(provider, tx.data);
+      Object.assign(baseData, l1FeeInfo);
+    }
 
     if (receipt.status === 1) {
       return res.json({ code: 200, message: 'success', data: baseData });
@@ -292,9 +365,8 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`TxTracer Backend running on http://localhost:${PORT}`);
-    console.log(`Primary RPC: ${BSC_RPC_PRIMARY}`);
-    console.log(`Fallback RPC: ${BSC_RPC_FALLBACK}`);
+    console.log(`Supported chains: ${Object.keys(CHAIN_CONFIG).join(', ')}`);
   });
 }
 
-module.exports = { app };
+module.exports = { app, CHAIN_CONFIG, getOptimismL1Fee };

@@ -392,3 +392,97 @@ describe('Health endpoint', () => {
     expect(res.body.status).toBe('ok');
   });
 });
+
+// ─── Chain validation ─────────────────────────────────────────────────────────
+
+describe('Chain validation', () => {
+  test('unsupported chain → 400', async () => {
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=unknown`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe(400);
+    expect(res.body.message).toMatch(/不支持的链/);
+  });
+
+  test('default chain is bsc (no chain param)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.chain).toBe('bsc');
+    expect(res.body.data.chainName).toBe('BSC');
+    expect(res.body.data.explorerUrl).toContain('bscscan.com');
+  });
+});
+
+// ─── Optimism (OP) chain tests ────────────────────────────────────────────────
+
+describe('Optimism chain support', () => {
+  // We need to mock the Contract for GasPriceOracle
+  let MockContract;
+
+  beforeEach(() => {
+    // Mock ethers.Contract for GasPriceOracle
+    MockContract = {
+      getL1Fee: jest.fn().mockResolvedValue(1000000000000000n), // 0.001 ETH
+      getL1GasUsed: jest.fn().mockResolvedValue(1600n),
+    };
+    // Patch ethers.Contract in the module
+    const ethersModule = require('ethers');
+    ethersModule.ethers.Contract = jest.fn(() => MockContract);
+  });
+
+  test('chain=op → chainName is Optimism and explorerUrl uses optimistic.etherscan.io', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=op`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.chain).toBe('op');
+    expect(res.body.data.chainName).toBe('Optimism');
+    expect(res.body.data.explorerUrl).toContain('optimistic.etherscan.io');
+  });
+
+  test('chain=op → valueSymbol is ETH', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=op`);
+    expect(res.body.data.valueSymbol).toBe('ETH');
+    expect(res.body.data.gasFeeSymbol).toBe('ETH');
+  });
+
+  test('chain=op SUCCESS tx contains l1Fee, l1FeeRaw, l1GasUsed fields', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=op`);
+    expect(res.body.data).toHaveProperty('l1Fee');
+    expect(res.body.data).toHaveProperty('l1FeeRaw');
+    expect(res.body.data).toHaveProperty('l1GasUsed');
+  });
+
+  test('chain=op PENDING tx has explorerUrl with optimistic.etherscan.io', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(null);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=op`);
+    expect(res.body.data.status).toBe('PENDING');
+    expect(res.body.data.chain).toBe('op');
+    expect(res.body.data.explorerUrl).toContain('optimistic.etherscan.io');
+  });
+
+  test('chain=op FAILED tx also has l1Fee fields', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 100000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 50000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=op`);
+    expect(res.body.data).toHaveProperty('l1Fee');
+    expect(res.body.data).toHaveProperty('l1FeeRaw');
+    expect(res.body.data).toHaveProperty('l1GasUsed');
+  });
+
+  test('chain=op GasPriceOracle failure → l1Fee fields are null (graceful fallback)', async () => {
+    MockContract.getL1Fee.mockRejectedValue(new Error('oracle error'));
+    MockContract.getL1GasUsed.mockRejectedValue(new Error('oracle error'));
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}?chain=op`);
+    expect(res.body.data.l1Fee).toBeNull();
+    expect(res.body.data.l1FeeRaw).toBeNull();
+    expect(res.body.data.l1GasUsed).toBeNull();
+  });
+});

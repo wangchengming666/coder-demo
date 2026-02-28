@@ -270,14 +270,17 @@ GET /api/v2/tx/:txHash?chain=bsc
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | txHash | String | 是 | 交易哈希 |
-| chain | String | 否 | 链标识，默认 bsc，支持 bsc / base |
+| chain | String | 否 | 链标识，默认 bsc，支持 bsc / op |
 
 **返回值新增字段：**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | chain | String | 当前查询的链标识 |
-| chainName | String | 链的展示名称，如 "BSC" / "Base" |
+| chainName | String | 链的展示名称，如 "BSC" / "Optimism" |
+| l1Fee | String | L1 费用（ETH），仅 OP Stack 链（op）返回 |
+| l1FeeRaw | String | L1 费用原始值（wei），仅 OP Stack 链返回 |
+| l1GasUsed | String | L1 Gas 用量，仅 OP Stack 链返回 |
 
 ## 验收标准
 
@@ -298,3 +301,23 @@ GET /api/v2/tx/:txHash?chain=bsc
 ### 示例需求二：修改接口参数与返回值
 
 见 [ISSUE-002-update-api-params-and-response.md](issues/ISSUE-002-update-api-params-and-response.md)
+
+### ISSUE-006：接入 Optimism 主网
+
+见 [ISSUE-006-add-optimism-support.md](issues/ISSUE-006-add-optimism-support.md)
+
+**Optimism 链查询示例：**
+
+```
+GET /api/v1/tx/0xYourTxHash?chain=op
+```
+
+**Optimism 专有返回字段（OP Stack L1 Fee）：**
+
+| 字段 | 说明 |
+|------|------|
+| l1Fee | 支付给 L1 的费用（ETH） |
+| l1FeeRaw | l1Fee 原始值（wei） |
+| l1GasUsed | L1 Gas 用量 |
+
+L1 Fee 通过调用 GasPriceOracle 合约（`0x420000000000000000000000000000000000000F`）获取。
