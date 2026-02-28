@@ -168,6 +168,90 @@ function getPanicSuggestion(code) {
   return suggestions[code] || '合约发生 Panic 错误，请联系合约开发者。';
 }
 
+// ─── NFT Transfer Parsing ─────────────────────────────────────────────────────
+
+const ERC721_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const ERC1155_TRANSFER_SINGLE_TOPIC = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
+const ERC1155_TRANSFER_BATCH_TOPIC = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb';
+
+function normalizeAddress(topic) {
+  // topic is 32-byte padded address: 0x000...000<address>
+  return '0x' + topic.slice(26);
+}
+
+function parseBigInt(hex) {
+  return BigInt(hex).toString();
+}
+
+function parseNftTransfers(logs) {
+  const nftTransfers = [];
+
+  for (const log of logs) {
+    const topics = log.topics;
+    if (!topics || topics.length === 0) continue;
+
+    const topic0 = topics[0].toLowerCase();
+    const contractAddress = log.address;
+
+    // ERC-721: Transfer(address from, address to, uint256 tokenId) — 4 topics
+    if (topic0 === ERC721_TRANSFER_TOPIC && topics.length === 4) {
+      nftTransfers.push({
+        contractAddress,
+        standard: 'ERC-721',
+        from: normalizeAddress(topics[1]),
+        to: normalizeAddress(topics[2]),
+        tokenId: parseBigInt(topics[3]),
+        amount: '1',
+      });
+      continue;
+    }
+
+    // ERC-1155 TransferSingle: 4 topics, data = abi.encode(id, value)
+    if (topic0 === ERC1155_TRANSFER_SINGLE_TOPIC && topics.length === 4) {
+      try {
+        const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+        const [id, value] = abiCoder.decode(['uint256', 'uint256'], log.data);
+        nftTransfers.push({
+          contractAddress,
+          standard: 'ERC-1155',
+          from: normalizeAddress(topics[2]),
+          to: normalizeAddress(topics[3]),
+          tokenId: id.toString(),
+          amount: value.toString(),
+        });
+      } catch (e) {
+        // skip malformed log
+      }
+      continue;
+    }
+
+    // ERC-1155 TransferBatch: 4 topics, data = abi.encode(uint256[], uint256[])
+    if (topic0 === ERC1155_TRANSFER_BATCH_TOPIC && topics.length === 4) {
+      try {
+        const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+        const [ids, values] = abiCoder.decode(['uint256[]', 'uint256[]'], log.data);
+        const from = normalizeAddress(topics[2]);
+        const to = normalizeAddress(topics[3]);
+        for (let i = 0; i < ids.length; i++) {
+          nftTransfers.push({
+            contractAddress,
+            standard: 'ERC-1155',
+            from,
+            to,
+            tokenId: ids[i].toString(),
+            amount: values[i].toString(),
+          });
+        }
+      } catch (e) {
+        // skip malformed log
+      }
+      continue;
+    }
+  }
+
+  return nftTransfers;
+}
+
 // Main API
 app.get('/api/v1/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
@@ -265,7 +349,10 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     };
 
     if (receipt.status === 1) {
-      return res.json({ code: 200, message: 'success', data: baseData });
+      const nftTransfers = parseNftTransfers(receipt.logs || []);
+      const successData = { ...baseData };
+      if (nftTransfers.length > 0) successData.nftTransfers = nftTransfers;
+      return res.json({ code: 200, message: 'success', data: successData });
     }
 
     // Failed — analyze

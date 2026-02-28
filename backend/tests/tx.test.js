@@ -383,6 +383,107 @@ describe('datetime field', () => {
   });
 });
 
+// ─── NFT Transfer Parsing ─────────────────────────────────────────────────────
+
+describe('NFT Transfer Parsing', () => {
+  const ERC721_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  const ERC1155_SINGLE_TOPIC = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
+  const ERC1155_BATCH_TOPIC = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb';
+
+  function pad32(hex) {
+    return '0x' + hex.replace('0x', '').padStart(64, '0');
+  }
+
+  const FROM_ADDR = '0xaabbccddaabbccddaabbccddaabbccddaabbccdd';
+  const TO_ADDR   = '0x1122334411223344112233441122334411223344';
+  const CONTRACT  = '0xNFTContract123';
+
+  test('ERC-721: topics.length === 4 → nftTransfers entry', async () => {
+    const tokenIdHex = pad32('0x1');
+    const receipt = makeReceipt(1, 21000n, {
+      logs: [{
+        address: CONTRACT,
+        topics: [ERC721_TOPIC, pad32(FROM_ADDR), pad32(TO_ADDR), tokenIdHex],
+        data: '0x',
+      }],
+    });
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.code).toBe(200);
+    const nft = res.body.data.nftTransfers;
+    expect(Array.isArray(nft)).toBe(true);
+    expect(nft).toHaveLength(1);
+    expect(nft[0].standard).toBe('ERC-721');
+    expect(nft[0].tokenId).toBe('1');
+    expect(nft[0].amount).toBe('1');
+    expect(nft[0].contractAddress).toBe(CONTRACT);
+  });
+
+  test('ERC-20: topics.length === 3 → not in nftTransfers', async () => {
+    const receipt = makeReceipt(1, 21000n, {
+      logs: [{
+        address: CONTRACT,
+        topics: [ERC721_TOPIC, pad32(FROM_ADDR), pad32(TO_ADDR)],
+        data: pad32('0x64'), // amount
+      }],
+    });
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.nftTransfers).toBeUndefined();
+  });
+
+  test('ERC-1155 TransferSingle → nftTransfers entry', async () => {
+    const abiCoder = actualEthers.AbiCoder.defaultAbiCoder();
+    const data = abiCoder.encode(['uint256', 'uint256'], [42n, 5n]);
+    const OPERATOR = '0xoperatoroperatoroperatoroperatoroperator00';
+    const receipt = makeReceipt(1, 21000n, {
+      logs: [{
+        address: CONTRACT,
+        topics: [ERC1155_SINGLE_TOPIC, pad32(OPERATOR), pad32(FROM_ADDR), pad32(TO_ADDR)],
+        data,
+      }],
+    });
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const nft = res.body.data.nftTransfers;
+    expect(nft).toHaveLength(1);
+    expect(nft[0].standard).toBe('ERC-1155');
+    expect(nft[0].tokenId).toBe('42');
+    expect(nft[0].amount).toBe('5');
+  });
+
+  test('ERC-1155 TransferBatch → multiple nftTransfers entries', async () => {
+    const abiCoder = actualEthers.AbiCoder.defaultAbiCoder();
+    const data = abiCoder.encode(['uint256[]', 'uint256[]'], [[1n, 2n, 3n], [10n, 20n, 30n]]);
+    const OPERATOR = '0xoperatoroperatoroperatoroperatoroperator00';
+    const receipt = makeReceipt(1, 21000n, {
+      logs: [{
+        address: CONTRACT,
+        topics: [ERC1155_BATCH_TOPIC, pad32(OPERATOR), pad32(FROM_ADDR), pad32(TO_ADDR)],
+        data,
+      }],
+    });
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const nft = res.body.data.nftTransfers;
+    expect(nft).toHaveLength(3);
+    expect(nft[0]).toMatchObject({ standard: 'ERC-1155', tokenId: '1', amount: '10' });
+    expect(nft[1]).toMatchObject({ tokenId: '2', amount: '20' });
+    expect(nft[2]).toMatchObject({ tokenId: '3', amount: '30' });
+  });
+
+  test('no NFT logs → nftTransfers not present in response', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n, { logs: [] }));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.nftTransfers).toBeUndefined();
+  });
+});
+
 // ─── Health endpoint ──────────────────────────────────────────────────────────
 
 describe('Health endpoint', () => {

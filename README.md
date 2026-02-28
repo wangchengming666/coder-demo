@@ -208,6 +208,33 @@ block 为 null 时（极少情况），`datetime` 返回 `null`。
 
 ---
 
+### nftTransfers 字段（ISSUE-008）
+
+成功交易（`status: SUCCESS`）若包含 NFT 转账事件，将在响应 `data` 中返回 `nftTransfers` 数组。
+
+支持的标准：
+
+| 标准 | 事件 | topic[0] |
+|------|------|----------|
+| ERC-721 | `Transfer(address from, address to, uint256 tokenId)` | `0xddf252ad...` |
+| ERC-1155 | `TransferSingle(address operator, address from, address to, uint256 id, uint256 value)` | `0xc3d58168...` |
+| ERC-1155 | `TransferBatch(address operator, address from, address to, uint256[] ids, uint256[] values)` | `0x4a39dc06...` |
+
+每条 `nftTransfers` 记录包含以下字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| contractAddress | String | NFT 合约地址 |
+| standard | String | `"ERC-721"` 或 `"ERC-1155"` |
+| from | String | 转出地址 |
+| to | String | 转入地址 |
+| tokenId | String | Token ID（十进制字符串） |
+| amount | String | 数量（ERC-721 固定为 `"1"`，ERC-1155 为实际转账数量） |
+
+> **注意：** ERC-721 Transfer 与 ERC-20 Transfer 共用同一 topic[0]，通过 `topics.length` 区分：3 个 topics 为 ERC-20，4 个 topics 为 ERC-721。无 NFT 转账时，`nftTransfers` 字段不出现在响应中。
+
+---
+
 ## BSC RPC 节点
 
 | 节点 | 地址 |
