@@ -108,7 +108,7 @@ GET /api/v1/tx/:txHash
 
 ```json
 {
-  "code": 0,
+  "code": 200,
   "message": "success",
   "data": {
     "txHash": "0xabc123...def456",
@@ -140,7 +140,7 @@ GET /api/v1/tx/:txHash
 
 ```json
 {
-  "code": 0,
+  "code": 200,
   "message": "success",
   "data": {
     "txHash": "0xabc123...def456",

@@ -131,7 +131,7 @@ describe('PENDING status', () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     // getTransactionReceipt stays null (default)
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
-    expect(res.body.code).toBe(0);
+    expect(res.body.code).toBe(200);
     const data = res.body.data;
     expect(data.status).toBe('PENDING');
     expect(data.txHash).toBe(VALID_TX_HASH);
@@ -151,7 +151,7 @@ describe('SUCCESS status', () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
-    expect(res.body.code).toBe(0);
+    expect(res.body.code).toBe(200);
     const data = res.body.data;
     expect(data.status).toBe('SUCCESS');
     expect(data).toHaveProperty('blockNumber');
