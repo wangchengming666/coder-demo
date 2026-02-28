@@ -109,6 +109,7 @@ GET /api/v1/tx/:txHash
 ```json
 {
   "code": 200,
+  "requestId": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
   "message": "success",
   "data": {
     "txHash": "0xabc123...def456",
@@ -141,6 +142,7 @@ GET /api/v1/tx/:txHash
 ```json
 {
   "code": 200,
+  "requestId": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
   "message": "success",
   "data": {
     "txHash": "0xabc123...def456",
