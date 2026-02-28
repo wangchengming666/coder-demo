@@ -343,6 +343,46 @@ describe('Server error handling', () => {
   });
 });
 
+// ─── datetime field ───────────────────────────────────────────────────────────
+
+describe('datetime field', () => {
+  const DATETIME_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+  test('SUCCESS response contains datetime in YYYY-MM-DD HH:mm:ss format', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue({ timestamp: 1700000000 });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data).toHaveProperty('datetime');
+    expect(res.body.data.datetime).toMatch(DATETIME_REGEX);
+  });
+
+  test('FAILED response contains datetime field', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 21000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 21000n));
+    mockProvider.getBlock.mockResolvedValue({ timestamp: 1700000000 });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data).toHaveProperty('datetime');
+    expect(res.body.data.datetime).toMatch(DATETIME_REGEX);
+  });
+
+  test('block === null → datetime is null', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue(null);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.datetime).toBeNull();
+  });
+
+  test('timestamp=0 → datetime is 1970-01-01 08:00:00 (UTC+8)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue({ timestamp: 0 });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.datetime).toBe('1970-01-01 08:00:00');
+  });
+});
+
 // ─── Health endpoint ──────────────────────────────────────────────────────────
 
 describe('Health endpoint', () => {

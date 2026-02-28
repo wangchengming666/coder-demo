@@ -226,6 +226,16 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const block = await provider.getBlock(receipt.blockNumber);
     const timestamp = block ? block.timestamp : null;
 
+    // Format datetime in UTC+8
+    const datetime = timestamp !== null
+      ? new Date(timestamp * 1000).toLocaleString('zh-CN', {
+          timeZone: 'Asia/Shanghai',
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+          hour12: false,
+        }).replace(/\//g, '-')
+      : null;
+
     const gasUsed = receipt.gasUsed;
     const gasPrice = tx.gasPrice;
     const gasFeeWei = gasUsed * gasPrice;
@@ -236,6 +246,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       blockNumber: receipt.blockNumber,
       blockHash: receipt.blockHash,
       timestamp,
+      datetime,
       from: tx.from,
       to: tx.to,
       value: ethers.formatEther(tx.value),
