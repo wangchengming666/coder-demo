@@ -216,3 +216,85 @@ block 为 null 时（极少情况），`datetime` 返回 `null`。
 | 备用节点 | https://bsc-dataseed2.binance.org |
 
 主节点不可用时自动切换备用节点。
+
+---
+
+## 需求管理规范
+
+所有需求统一放在 `issues/` 目录，文件名格式：
+
+```
+issues/ISSUE-<编号>-<简短描述>.md
+```
+
+示例：
+```
+issues/ISSUE-001-add-base-chain-support.md
+issues/ISSUE-002-update-api-params-and-response.md
+```
+
+---
+
+### 需求文档模板
+
+```markdown
+# ISSUE-<编号> <需求标题>
+
+**状态：** 待开发 / 开发中 / 已完成  
+**优先级：** P0 / P1 / P2  
+**提出人：** Vault (PM)  
+**日期：** YYYY-MM-DD  
+
+## 背景
+
+说明为什么要做这个需求。
+
+## 需求描述
+
+具体要做什么，面向开发的详细说明。
+
+## 接口变更（如有）
+
+### 变更前
+
+\`\`\`
+GET /api/v1/tx/:txHash
+\`\`\`
+
+### 变更后
+
+\`\`\`
+GET /api/v2/tx/:txHash?chain=bsc
+\`\`\`
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| txHash | String | 是 | 交易哈希 |
+| chain | String | 否 | 链标识，默认 bsc，支持 bsc / base |
+
+**返回值新增字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| chain | String | 当前查询的链标识 |
+| chainName | String | 链的展示名称，如 "BSC" / "Base" |
+
+## 验收标准
+
+- [ ] 功能点 1
+- [ ] 功能点 2
+
+## 备注
+
+其他补充说明。
+```
+
+---
+
+### 示例需求一：接入 Base 链
+
+见 [ISSUE-001-add-base-chain-support.md](issues/ISSUE-001-add-base-chain-support.md)
+
+### 示例需求二：修改接口参数与返回值
+
+见 [ISSUE-002-update-api-params-and-response.md](issues/ISSUE-002-update-api-params-and-response.md)
