@@ -1,3 +1,16 @@
+# TxTracer
+
+## 支持的链
+
+| 链 | chain 参数 | 浏览器 |
+|----|-----------|--------|
+| BNB Smart Chain | `bsc` | BscScan |
+| Ethereum | `eth` | Etherscan |
+
+ETH 专属字段：txType（0=Legacy,2=EIP-1559）、baseFee（Gwei）、maxPriorityFee（Gwei）
+
+---
+
 # TxTracer for BSC
 
 > BSC 链上交易查询与失败原因分析工具

@@ -11,6 +11,12 @@
 
     <!-- Search Area -->
     <div class="search-area">
+      <div class="chain-selector-row">
+        <a-select v-model:value="selectedChain" size="large" class="chain-select">
+          <a-select-option value="bsc">BNB Smart Chain (BSC)</a-select-option>
+          <a-select-option value="eth">Ethereum (ETH)</a-select-option>
+        </a-select>
+      </div>
       <a-input-search
         v-model:value="txHash"
         placeholder="输入交易哈希 (0x...)"
@@ -119,6 +125,7 @@ import { fetchTransaction } from './api/tx.js';
 import TxBasicCard from './components/TxBasicCard.vue';
 
 const txHash = ref('');
+const selectedChain = ref('bsc');
 const loading = ref(false);
 const state = ref('idle'); // idle | error | not_found | pending | success | failed
 const txData = ref(null);
@@ -145,7 +152,7 @@ async function handleSearch() {
   state.value = 'idle';
 
   try {
-    const result = await fetchTransaction(hash);
+    const result = await fetchTransaction(hash, selectedChain.value);
 
     if (result.code === 404) {
       state.value = 'not_found';
@@ -230,6 +237,8 @@ body { margin: 0; background: #f0f2f5; font-family: -apple-system, BlinkMacSyste
   z-index: 10;
 }
 
+.chain-selector-row { margin-bottom: 10px; }
+.chain-select { width: 240px; }
 .search-input {
   border-radius: 8px;
   overflow: hidden;

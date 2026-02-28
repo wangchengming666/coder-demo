@@ -392,3 +392,21 @@ describe('Health endpoint', () => {
     expect(res.body.status).toBe('ok');
   });
 });
+
+describe('V2 API - input validation', () => {
+  test('invalid txHash -> 400', async () => { const res = await request(app).get('/api/v2/tx/0xinvalid?chain=bsc'); expect(res.status).toBe(400); expect(res.body.error.code).toBe('INVALID_TX_HASH'); });
+  test('unsupported chain -> 400', async () => { const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=sol`); expect(res.status).toBe(400); expect(res.body.error.code).toBe('UNSUPPORTED_CHAIN'); });
+});
+describe('V2 API - BSC', () => {
+  test('not found -> 404', async () => { const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=bsc`); expect(res.status).toBe(404); expect(res.body.error.code).toBe('TX_NOT_FOUND'); });
+  test('pending -> PENDING', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx()); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=bsc`); expect(res.body.data.status).toBe('PENDING'); expect(res.body.data.chain).toBe('bsc'); expect(res.body.data).not.toHaveProperty('txType'); });
+  test('success -> SUCCESS', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx()); mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1)); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=bsc`); expect(res.body.data.status).toBe('SUCCESS'); expect(res.body.data.value.symbol).toBe('BNB'); });
+  test('default is bsc', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx()); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}`); expect(res.body.data.chain).toBe('bsc'); });
+  test('error -> 500', async () => { mockProvider.getTransaction.mockRejectedValue(new Error('e')); mockProvider.getTransactionReceipt.mockRejectedValue(new Error('e')); mockProvider.getBlockNumber.mockRejectedValue(new Error('e')); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=bsc`); expect(res.status).toBe(500); expect(res.body.error.code).toBe('INTERNAL_ERROR'); });
+});
+describe('V2 API - ETH', () => {
+  test('legacy type=0', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx({ type: 0 })); mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1)); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=eth`); expect(res.body.data.chain).toBe('eth'); expect(res.body.data.txType).toBe(0); expect(res.body.data.baseFee).toBeNull(); expect(res.body.data.explorerUrl).toContain('etherscan.io'); expect(res.body.data.value.symbol).toBe('ETH'); });
+  test('EIP-1559 type=2', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx({ type: 2, maxPriorityFeePerGas: 1500000000n })); mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1)); mockProvider.getBlock.mockResolvedValue({ timestamp: 1700000000, baseFeePerGas: 15000000000n }); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=eth`); expect(res.body.data.txType).toBe(2); expect(res.body.data.baseFee).toBeCloseTo(15, 1); expect(res.body.data.maxPriorityFee).toBeCloseTo(1.5, 1); });
+  test('EIP-1559 null block', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx({ type: 2, maxPriorityFeePerGas: 1000000000n })); mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1)); mockProvider.getBlock.mockResolvedValue(null); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=eth`); expect(res.body.data.txType).toBe(2); expect(res.body.data.baseFee).toBeNull(); });
+  test('eth pending', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx({ type: 2 })); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=eth`); expect(res.body.data.status).toBe('PENDING'); expect(res.body.data.txType).toBe(2); expect(res.body.data.baseFee).toBeNull(); });
+});

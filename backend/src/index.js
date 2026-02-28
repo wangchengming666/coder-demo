@@ -14,15 +14,30 @@ app.use(express.static(path.join(__dirname, '../../frontend/dist')));
 const PORT = process.env.PORT || 3000;
 const BSC_RPC_PRIMARY = process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org';
 const BSC_RPC_FALLBACK = process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org';
+const ETH_RPC_PRIMARY = process.env.ETH_RPC_PRIMARY || 'https://eth.llamarpc.com';
+const ETH_RPC_FALLBACK = process.env.ETH_RPC_FALLBACK || 'https://rpc.ankr.com/eth';
 
-async function getProvider() {
+const CHAIN_CONFIG = {
+  bsc: {
+    name: 'BNB Smart Chain', rpcPrimary: BSC_RPC_PRIMARY, rpcFallback: BSC_RPC_FALLBACK,
+    explorerUrl: (txHash) => `https://bscscan.com/tx/${txHash}`, valueSymbol: 'BNB', decimals: 18,
+  },
+  eth: {
+    name: 'Ethereum', rpcPrimary: ETH_RPC_PRIMARY, rpcFallback: ETH_RPC_FALLBACK,
+    explorerUrl: (txHash) => `https://etherscan.io/tx/${txHash}`, valueSymbol: 'ETH', decimals: 18,
+  },
+};
+
+async function getProvider(chain) {
+  chain = chain || 'bsc';
+  const config = CHAIN_CONFIG[chain] || CHAIN_CONFIG.bsc;
   try {
-    const provider = new ethers.JsonRpcProvider(BSC_RPC_PRIMARY);
+    const provider = new ethers.JsonRpcProvider(config.rpcPrimary);
     await provider.getBlockNumber();
     return provider;
   } catch (e) {
     console.warn('Primary RPC failed, switching to fallback:', e.message);
-    return new ethers.JsonRpcProvider(BSC_RPC_FALLBACK);
+    return new ethers.JsonRpcProvider(config.rpcFallback);
   }
 }
 
@@ -167,6 +182,37 @@ function getPanicSuggestion(code) {
   };
   return suggestions[code] || '合约发生 Panic 错误，请联系合约开发者。';
 }
+
+// V2 API: multi-chain
+app.get('/api/v2/tx/:txHash', async (req, res) => {
+  const { txHash } = req.params;
+  const chain = (req.query.chain || 'bsc').toLowerCase();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return res.status(400).json({ success: false, error: { code: 'INVALID_TX_HASH', message: 'txHash 格式错误' } });
+  if (!CHAIN_CONFIG[chain]) return res.status(400).json({ success: false, error: { code: 'UNSUPPORTED_CHAIN', message: `不支持的链: ${chain}，目前支持: ${Object.keys(CHAIN_CONFIG).join(', ')}` } });
+  const chainConfig = CHAIN_CONFIG[chain];
+  try {
+    const provider = await getProvider(chain);
+    const [tx, receipt] = await Promise.all([provider.getTransaction(txHash), provider.getTransactionReceipt(txHash)]);
+    if (!tx) return res.status(404).json({ success: false, error: { code: 'TX_NOT_FOUND', message: '未找到该交易' } });
+    let timestamp = null, block = null;
+    if (receipt) { block = await provider.getBlock(receipt.blockNumber); timestamp = block ? block.timestamp : null; }
+    const status = !receipt ? 'PENDING' : (receipt.status === 1 ? 'SUCCESS' : 'FAILED');
+    let txType = null, baseFee = null, maxPriorityFee = null;
+    if (chain === 'eth') {
+      txType = (tx.type !== undefined && tx.type !== null) ? Number(tx.type) : null;
+      if (txType === 2) {
+        if (block && block.baseFeePerGas != null) baseFee = parseFloat(ethers.formatUnits(block.baseFeePerGas, 'gwei'));
+        if (tx.maxPriorityFeePerGas != null) maxPriorityFee = parseFloat(ethers.formatUnits(tx.maxPriorityFeePerGas, 'gwei'));
+      }
+    }
+    const data = { txHash, chain, chainName: chainConfig.name, status, value: { amount: ethers.formatEther(tx.value), symbol: chainConfig.valueSymbol, raw: tx.value.toString(), decimals: chainConfig.decimals }, timestamp, explorerUrl: chainConfig.explorerUrl(txHash) };
+    if (chain === 'eth') { data.txType = txType; data.baseFee = baseFee; data.maxPriorityFee = maxPriorityFee; }
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error('Error processing v2 tx:', err);
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: `服务器内部错误: ${err.message}` } });
+  }
+});
 
 // Main API
 app.get('/api/v1/tx/:txHash', async (req, res) => {
