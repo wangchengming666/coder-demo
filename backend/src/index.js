@@ -26,6 +26,45 @@ async function getProvider() {
   }
 }
 
+// Multi-chain config
+const CHAIN_CONFIG = {
+  bsc: {
+    rpcPrimary: process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org',
+    rpcFallback: process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org',
+    explorerUrl: 'https://bscscan.com/tx/:txHash',
+    symbol: 'BNB',
+    decimals: 18,
+    chainName: 'BNB Smart Chain',
+  },
+  arb: {
+    rpcPrimary: process.env.ARB_RPC_PRIMARY || 'https://arb1.arbitrum.io/rpc',
+    rpcFallback: process.env.ARB_RPC_FALLBACK || 'https://rpc.ankr.com/arbitrum',
+    explorerUrl: 'https://arbiscan.io/tx/:txHash',
+    symbol: 'ETH',
+    decimals: 18,
+    chainName: 'Arbitrum One',
+  },
+};
+
+async function getProviderForChain(chainConfig) {
+  try {
+    const provider = new ethers.JsonRpcProvider(chainConfig.rpcPrimary);
+    await provider.getBlockNumber();
+    return provider;
+  } catch (e) {
+    console.warn('Primary RPC failed for chain, switching to fallback:', e.message);
+    return new ethers.JsonRpcProvider(chainConfig.rpcFallback);
+  }
+}
+
+async function getArbL1Fee(provider, receipt) {
+  if (receipt.l1Fee !== undefined && receipt.l1Fee !== null) {
+    const l1FeeRaw = BigInt(receipt.l1Fee.toString());
+    return { l1Fee: ethers.formatEther(l1FeeRaw), l1FeeRaw: l1FeeRaw.toString() };
+  }
+  return { l1Fee: null, l1FeeRaw: null };
+}
+
 const PANIC_CODES = {
   0: '断言失败 (Assert Failed)',
   1: '算术溢出/下溢 (Arithmetic overflow/underflow)',
@@ -286,6 +325,94 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
   }
 });
 
+// v2 API - Multi-chain support
+app.get('/api/v2/tx/:txHash', async (req, res) => {
+  const { txHash } = req.params;
+  const chain = (req.query.chain || 'bsc').toLowerCase();
+
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    return res.status(400).json({ code: 400, message: 'invalid hash', data: null });
+  }
+
+  const chainConfig = CHAIN_CONFIG[chain];
+  if (!chainConfig) {
+    return res.status(400).json({ code: 400, message: `unsupported chain: ${chain}`, data: null });
+  }
+
+  const explorerUrl = chainConfig.explorerUrl.replace(':txHash', txHash);
+
+  try {
+    const provider = await getProviderForChain(chainConfig);
+    const [tx, receipt, currentBlock] = await Promise.all([
+      provider.getTransaction(txHash),
+      provider.getTransactionReceipt(txHash),
+      provider.getBlockNumber(),
+    ]);
+
+    if (!tx) {
+      return res.json({ code: 404, message: 'tx not found', data: null });
+    }
+
+    if (!receipt) {
+      return res.json({ code: 200, message: 'success', data: {
+        txHash, chain, chainName: chainConfig.chainName, status: 'PENDING',
+        from: tx.from, to: tx.to,
+        value: ethers.formatEther(tx.value), valueSymbol: chainConfig.symbol,
+        valueRaw: tx.value.toString(),
+        gasLimit: tx.gasLimit.toString(),
+        gasPrice: ethers.formatUnits(tx.gasPrice, 'gwei'), gasPriceUnit: 'Gwei',
+        nonce: tx.nonce, inputData: tx.data, explorerUrl,
+      }});
+    }
+
+    const block = await provider.getBlock(receipt.blockNumber);
+    const timestamp = block ? block.timestamp : null;
+    const datetime = timestamp !== null
+      ? new Date(timestamp * 1000).toLocaleString('zh-CN', {
+          timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        }).replace(/\//g, '-')
+      : null;
+
+    const gasUsed = receipt.gasUsed;
+    const gasPrice = tx.gasPrice;
+    const gasFeeWei = gasUsed * gasPrice;
+
+    const baseData = {
+      txHash, chain, chainName: chainConfig.chainName,
+      status: receipt.status === 1 ? 'SUCCESS' : 'FAILED',
+      blockNumber: receipt.blockNumber, blockHash: receipt.blockHash,
+      timestamp, datetime, from: tx.from, to: tx.to,
+      value: ethers.formatEther(tx.value), valueSymbol: chainConfig.symbol,
+      valueRaw: tx.value.toString(), gasLimit: tx.gasLimit.toString(),
+      gasUsed: gasUsed.toString(),
+      gasPrice: ethers.formatUnits(tx.gasPrice, 'gwei'), gasPriceUnit: 'Gwei',
+      gasFee: ethers.formatEther(gasFeeWei), gasFeeSymbol: chainConfig.symbol,
+      nonce: tx.nonce, inputData: tx.data,
+      confirmations: currentBlock - receipt.blockNumber, explorerUrl,
+    };
+
+    if (chain === 'arb') {
+      const arbFee = await getArbL1Fee(provider, receipt);
+      if (arbFee.l1Fee !== null) {
+        baseData.l1Fee = arbFee.l1Fee;
+        baseData.l1FeeRaw = arbFee.l1FeeRaw;
+      }
+    }
+
+    if (receipt.status === 1) {
+      return res.json({ code: 200, message: 'success', data: baseData });
+    }
+
+    const failureInfo = await analyzeFailure(provider, tx, receipt);
+    return res.json({ code: 200, message: 'success', data: { ...baseData, failureInfo } });
+
+  } catch (err) {
+    console.error('Error processing tx:', err);
+    return res.status(500).json({ code: 500, message: `server error: ${err.message}`, data: null });
+  }
+});
+
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 // Export app for testing; only start server if run directly
@@ -297,4 +424,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app };
+module.exports = { app, CHAIN_CONFIG };
