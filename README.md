@@ -1,6 +1,6 @@
-# TxTracer for BSC
+# TxTracer 多链版
 
-> BSC 链上交易查询与失败原因分析工具
+> EVM 多链交易查询与失败原因分析工具，支持 BSC 和 Base 链
 
 不只告诉你「交易失败了」，还告诉你**为什么失败、怎么修复**。
 
@@ -10,11 +10,12 @@
 
 | 功能 | 说明 |
 |------|------|
-| 交易查询 | 输入 TxHash，一键查询 BSC 链上状态 |
+| 多链支持 | 支持 BSC 和 Base 链，前端链选择器一键切换 |
+| 交易查询 | 输入 TxHash，一键查询链上状态 |
 | 交易详情 | From / To / 金额 / Gas / 区块号 / 时间戳 / 确认数 |
 | 失败原因分析 | 自动解析 Revert Reason，给出中文失败原因与修复建议 |
 | 状态分类 | 覆盖 Pending / Success / Failed / Not Found 四种状态 |
-| 快捷跳转 | 一键跳转 BscScan 区块浏览器 |
+| 快捷跳转 | BSC 跳 BscScan，Base 跳 Basescan |
 | RPC 自动切换 | 主节点失败自动切换备用节点 |
 
 ---
@@ -40,10 +41,10 @@ coder-demo/
 └── frontend/
     ├── src/
     │   ├── api/
-    │   │   └── tx.js         # API 封装
+    │   │   └── tx.js         # API 封装（v1/v2）
     │   ├── components/
     │   │   └── TxBasicCard.vue  # 交易详情卡片组件
-    │   ├── App.vue            # 主页面
+    │   ├── App.vue            # 主页面（含链选择器）
     │   └── main.js
     ├── vite.config.js         # 含 /api 代理配置
     └── package.json
@@ -67,6 +68,8 @@ node src/index.js
 ```env
 BSC_RPC_PRIMARY=https://bsc-dataseed1.binance.org
 BSC_RPC_FALLBACK=https://bsc-dataseed2.binance.org
+BASE_RPC_PRIMARY=https://mainnet.base.org
+BASE_RPC_FALLBACK=https://base.drpc.org
 PORT=3000
 ```
 
@@ -92,10 +95,22 @@ npm run build
 
 ## API 接口
 
-### 查询交易
+### v1 接口（BSC，向下兼容）⚠️ Deprecated
+
+> ⚠️ **v1 已废弃（Deprecated）**，建议使用 v2 接口。v1 保留仅供向下兼容，未来可能移除。
 
 ```
 GET /api/v1/tx/:txHash
+```
+
+固定查询 BSC 链，不支持 chain 参数，保持原有行为不变。响应格式为旧的 `{ code, message, data }` 结构。
+
+### v2 接口（多链 + 新响应结构）
+
+> v2 使用全新的响应结构，返回 `success`、`requestId`、结构化的 `value` 和 `datetime` 对象。
+
+```
+GET /api/v2/tx/:txHash?chain=bsc
 ```
 
 **路径参数：**
@@ -104,66 +119,72 @@ GET /api/v1/tx/:txHash
 |------|------|------|
 | txHash | String | 66 位十六进制交易哈希（0x 开头） |
 
-**响应示例 — 交易成功：**
+**查询参数：**
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+|------|------|------|------|------|
+| chain | String | 否 | bsc | 链标识，支持 `bsc` / `base` |
+
+**成功响应：**
 
 ```json
 {
-  "code": 200,
-  "message": "success",
+  "success": true,
+  "requestId": "e006d09d-f6b1-4001-9455-7d0049abcce4",
   "data": {
     "txHash": "0xabc123...def456",
+    "chain": "bsc",
+    "chainName": "BNB Smart Chain",
     "status": "SUCCESS",
-    "blockNumber": 37500000,
-    "blockHash": "0xbbb...",
-    "timestamp": 1709100000,
-    "from": "0xSenderAddress",
-    "to": "0xReceiverAddress",
-    "value": "0.0001",
-    "valueSymbol": "BNB",
-    "valueRaw": "100000000000000",
-    "gasLimit": "21000",
-    "gasUsed": "21000",
-    "gasPrice": "3",
-    "gasPriceUnit": "Gwei",
-    "gasFee": "0.000063",
-    "gasFeeSymbol": "BNB",
-    "nonce": 88,
-    "inputData": "0x",
-    "confirmations": 500,
-    "explorerUrl": "https://bscscan.com/tx/0xabc123...",
-    "datetime": "2026-02-28 21:51:25"
-  }
-}
-```
-
-**响应示例 — 交易失败（额外返回 failureInfo）：**
-
-```json
-{
-  "code": 200,
-  "message": "success",
-  "data": {
-    "txHash": "0xabc123...def456",
-    "status": "FAILED",
-    "failureInfo": {
-      "errorCategory": "CONTRACT_REVERT",
-      "errorCategoryDesc": "合约执行回滚",
-      "revertReason": "ERC20: transfer amount exceeds balance",
-      "revertReasonRaw": "0x08c379a0...",
-      "suggestion": "请检查您的代币余额是否充足。"
+    "value": {
+      "amount": "0.0001",
+      "symbol": "BNB",
+      "raw": "100000000000000",
+      "decimals": 18
+    },
+    "datetime": {
+      "utc": "2026-02-28T13:51:25Z",
+      "local": "2026-02-28 21:51:25",
+      "timezone": "Asia/Shanghai",
+      "timestamp": 1772267485
     }
   }
 }
 ```
 
-**响应状态码：**
+> PENDING 状态时 `datetime` 为 `null`。
 
-| code | 说明 |
-|------|------|
-| 0 | 成功 |
-| 400 | txHash 格式错误 |
-| 404 | 交易不存在 |
-| 500 | 服务器内部错误 |
+**错误响应：**
+
+```json
+{
+  "success": false,
+  "requestId": "uuid-v4",
+  "error": {
+    "code": "INVALID_TX_HASH",
+    "message": "txHash 格式错误，应为 66 位十六进制字符串"
+  }
+}
+```
+
+**错误码：**
+
+| 错误码 | HTTP 状态 | 说明 |
+|--------|-----------|------|
+| `INVALID_TX_HASH` | 400 | txHash 格式错误 |
+| `UNSUPPORTED_CHAIN` | 400 | 不支持的链 |
+| `TX_NOT_FOUND` | 404 | 交易不存在 |
+| `RPC_ERROR` | 502 | RPC 节点连接失败 |
+| `INTERNAL_ERROR` | 500 | 服务器内部错误 |
+
+---
+
+## 支持的链
+
+| 链标识 | 链名称 | 代币 | 区块浏览器 |
+|--------|--------|------|-----------|
+| `bsc` | BNB Smart Chain | BNB | https://bscscan.com |
+| `base` | Base | ETH | https://basescan.org |
 
 ---
 
@@ -195,9 +216,7 @@ GET /api/v1/tx/:txHash
 
 ---
 
-## 字段说明
-
-### datetime 字段
+## datetime 字段
 所有包含区块信息的响应（SUCCESS / FAILED）均返回 `datetime` 字段：
 
 | 字段 | 格式 | 时区 | 示例 |
@@ -208,12 +227,12 @@ block 为 null 时（极少情况），`datetime` 返回 `null`。
 
 ---
 
-## BSC RPC 节点
+## RPC 节点
 
-| 节点 | 地址 |
-|------|------|
-| 主节点 | https://bsc-dataseed1.binance.org |
-| 备用节点 | https://bsc-dataseed2.binance.org |
+| 链 | 主节点 | 备用节点 |
+|----|--------|---------|
+| BSC | https://bsc-dataseed1.binance.org | https://bsc-dataseed2.binance.org |
+| Base | https://mainnet.base.org | https://base.drpc.org |
 
 主节点不可用时自动切换备用节点。
 
@@ -231,62 +250,6 @@ issues/ISSUE-<编号>-<简短描述>.md
 ```
 issues/ISSUE-001-add-base-chain-support.md
 issues/ISSUE-002-update-api-params-and-response.md
-```
-
----
-
-### 需求文档模板
-
-```markdown
-# ISSUE-<编号> <需求标题>
-
-**状态：** 待开发 / 开发中 / 已完成  
-**优先级：** P0 / P1 / P2  
-**提出人：** Vault (PM)  
-**日期：** YYYY-MM-DD  
-
-## 背景
-
-说明为什么要做这个需求。
-
-## 需求描述
-
-具体要做什么，面向开发的详细说明。
-
-## 接口变更（如有）
-
-### 变更前
-
-\`\`\`
-GET /api/v1/tx/:txHash
-\`\`\`
-
-### 变更后
-
-\`\`\`
-GET /api/v2/tx/:txHash?chain=bsc
-\`\`\`
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| txHash | String | 是 | 交易哈希 |
-| chain | String | 否 | 链标识，默认 bsc，支持 bsc / base |
-
-**返回值新增字段：**
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| chain | String | 当前查询的链标识 |
-| chainName | String | 链的展示名称，如 "BSC" / "Base" |
-
-## 验收标准
-
-- [ ] 功能点 1
-- [ ] 功能点 2
-
-## 备注
-
-其他补充说明。
 ```
 
 ---

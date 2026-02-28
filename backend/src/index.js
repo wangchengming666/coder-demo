@@ -25,6 +25,7 @@ const CHAIN_CONFIG = {
     rpcFallback: BSC_RPC_FALLBACK,
     explorerUrl: (txHash) => `https://bscscan.com/tx/${txHash}`,
     valueSymbol: 'BNB',
+    decimals: 18,
   },
   base: {
     name: 'Base',
@@ -32,6 +33,7 @@ const CHAIN_CONFIG = {
     rpcFallback: BASE_RPC_FALLBACK,
     explorerUrl: (txHash) => `https://basescan.org/tx/${txHash}`,
     valueSymbol: 'ETH',
+    decimals: 18,
   },
 };
 
@@ -201,122 +203,116 @@ function buildDatetime(timestamp) {
   }).replace(/\//g, '-');
 }
 
-// ─── V2 API: multi-chain support ──────────────────────────────────────────────
+// ─── V2 API: new response structure (ISSUE-002) ───────────────────────────────
 
 app.get('/api/v2/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
   const chain = (req.query.chain || 'bsc').toLowerCase();
+  const requestId = crypto.randomUUID();
 
-  if (!CHAIN_CONFIG[chain]) {
+  // Validate txHash format
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     return res.status(400).json({
-      code: 400,
-      message: `不支持的链: ${chain}。目前支持: ${Object.keys(CHAIN_CONFIG).join(', ')}`,
-      data: null,
+      success: false,
+      requestId,
+      error: {
+        code: 'INVALID_TX_HASH',
+        message: 'txHash 格式错误，应为 66 位十六进制字符串',
+      },
     });
   }
 
-  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+  // Validate chain
+  if (!CHAIN_CONFIG[chain]) {
     return res.status(400).json({
-      code: 400,
-      message: '无效的交易哈希格式，请输入 0x 开头的 64 位十六进制字符串',
-      data: null,
+      success: false,
+      requestId,
+      error: {
+        code: 'UNSUPPORTED_CHAIN',
+        message: `不支持的链: ${chain}，目前支持: ${Object.keys(CHAIN_CONFIG).join(', ')}`,
+      },
     });
   }
 
   const chainConfig = CHAIN_CONFIG[chain];
 
   try {
-    const provider = await getProvider(chain);
-
-    const [tx, receipt, currentBlock] = await Promise.all([
-      provider.getTransaction(txHash),
-      provider.getTransactionReceipt(txHash),
-      provider.getBlockNumber(),
-    ]);
-
-    if (!tx) {
-      return res.json({
-        code: 404,
-        message: '未找到该交易，请确认哈希是否正确或交易是否已广播',
-        data: null,
-      });
-    }
-
-    if (!receipt) {
-      return res.json({
-        code: 200,
-        message: 'success',
-        data: {
-          txHash,
-          chain,
-          chainName: chainConfig.name,
-          status: 'PENDING',
-          from: tx.from,
-          to: tx.to,
-          value: ethers.formatEther(tx.value),
-          valueSymbol: chainConfig.valueSymbol,
-          valueRaw: tx.value.toString(),
-          gasLimit: tx.gasLimit.toString(),
-          gasPrice: ethers.formatUnits(tx.gasPrice, 'gwei'),
-          gasPriceUnit: 'Gwei',
-          nonce: tx.nonce,
-          inputData: tx.data,
-          explorerUrl: chainConfig.explorerUrl(txHash),
+    let provider;
+    try {
+      provider = await getProvider(chain);
+    } catch (err) {
+      return res.status(502).json({
+        success: false,
+        requestId,
+        error: {
+          code: 'RPC_ERROR',
+          message: `RPC 连接失败: ${err.message}`,
         },
       });
     }
 
-    const block = await provider.getBlock(receipt.blockNumber);
-    const timestamp = block ? block.timestamp : null;
-    const datetime = buildDatetime(timestamp);
+    const [tx, receipt] = await Promise.all([
+      provider.getTransaction(txHash),
+      provider.getTransactionReceipt(txHash),
+    ]);
 
-    const gasUsed = receipt.gasUsed;
-    const gasPrice = tx.gasPrice;
-    const gasFeeWei = gasUsed * gasPrice;
-
-    const baseData = {
-      txHash,
-      chain,
-      chainName: chainConfig.name,
-      status: receipt.status === 1 ? 'SUCCESS' : 'FAILED',
-      blockNumber: receipt.blockNumber,
-      blockHash: receipt.blockHash,
-      timestamp,
-      datetime,
-      from: tx.from,
-      to: tx.to,
-      value: ethers.formatEther(tx.value),
-      valueSymbol: chainConfig.valueSymbol,
-      valueRaw: tx.value.toString(),
-      gasLimit: tx.gasLimit.toString(),
-      gasUsed: gasUsed.toString(),
-      gasPrice: ethers.formatUnits(gasPrice, 'gwei'),
-      gasPriceUnit: 'Gwei',
-      gasFee: ethers.formatEther(gasFeeWei),
-      gasFeeSymbol: chainConfig.valueSymbol,
-      nonce: tx.nonce,
-      inputData: tx.data,
-      confirmations: currentBlock - receipt.blockNumber,
-      explorerUrl: chainConfig.explorerUrl(txHash),
-    };
-
-    if (receipt.status === 1) {
-      return res.json({ code: 200, message: 'success', data: baseData });
+    if (!tx) {
+      return res.status(404).json({
+        success: false,
+        requestId,
+        error: {
+          code: 'TX_NOT_FOUND',
+          message: '未找到该交易，请确认哈希是否正确或交易是否已广播',
+        },
+      });
     }
 
-    const failureInfo = await analyzeFailure(provider, tx, receipt);
+    // Get block for timestamp
+    let timestamp = null;
+    if (receipt) {
+      const block = await provider.getBlock(receipt.blockNumber);
+      timestamp = block ? block.timestamp : null;
+    }
+
+    // Build structured datetime object
+    let datetimeObj = null;
+    if (timestamp !== null) {
+      const utc = new Date(timestamp * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const localDate = new Date(timestamp * 1000 + 8 * 3600 * 1000);
+      const pad = n => String(n).padStart(2, '0');
+      const local = `${localDate.getUTCFullYear()}-${pad(localDate.getUTCMonth() + 1)}-${pad(localDate.getUTCDate())} ${pad(localDate.getUTCHours())}:${pad(localDate.getUTCMinutes())}:${pad(localDate.getUTCSeconds())}`;
+      datetimeObj = { utc, local, timezone: 'Asia/Shanghai', timestamp };
+    }
+
+    const status = !receipt ? 'PENDING' : (receipt.status === 1 ? 'SUCCESS' : 'FAILED');
+
     return res.json({
-      code: 200,
-      message: 'success',
-      data: { ...baseData, failureInfo },
+      success: true,
+      requestId,
+      data: {
+        txHash,
+        chain,
+        chainName: chainConfig.name,
+        status,
+        value: {
+          amount: ethers.formatEther(tx.value),
+          symbol: chainConfig.valueSymbol,
+          raw: tx.value.toString(),
+          decimals: chainConfig.decimals,
+        },
+        datetime: datetimeObj,
+      },
     });
 
   } catch (err) {
-    console.error('Error processing tx:', err);
+    console.error('Error processing v2 tx:', err);
     return res.status(500).json({
-      code: 500,
-      message: `服务器内部错误: ${err.message}`,
-      data: null,
+      success: false,
+      requestId,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `服务器内部错误: ${err.message}`,
+      },
     });
   }
 });

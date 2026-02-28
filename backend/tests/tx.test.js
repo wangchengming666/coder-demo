@@ -393,81 +393,91 @@ describe('Health endpoint', () => {
   });
 });
 
-// ─── v2 API - Base chain tests ────────────────────────────────────────────────
+// ─── v2 API - ISSUE-002 new response structure ────────────────────────────────
 
-describe('v2 API - Base chain support', () => {
-  test('GET /api/v2/tx/:hash without chain param defaults to bsc', async () => {
+describe('v2 API - new response structure (ISSUE-002)', () => {
+  test('defaults to bsc when no chain param', async () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
     const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}`);
-    expect(res.body.code).toBe(200);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.requestId).toBeDefined();
     const data = res.body.data;
     expect(data.chain).toBe('bsc');
     expect(data.chainName).toBe('BNB Smart Chain');
-    expect(data.explorerUrl).toContain('bscscan.com');
-    expect(data.valueSymbol).toBe('BNB');
+    expect(data.value.symbol).toBe('BNB');
+    expect(data.value.decimals).toBe(18);
   });
 
-  test('GET /api/v2/tx/:hash?chain=bsc → BSC chain info', async () => {
+  test('chain=bsc → BSC chain info with structured value', async () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
     const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=bsc`);
-    expect(res.body.code).toBe(200);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
     const data = res.body.data;
     expect(data.chain).toBe('bsc');
-    expect(data.explorerUrl).toContain('bscscan.com');
+    expect(data.value).toHaveProperty('amount');
+    expect(data.value).toHaveProperty('symbol');
+    expect(data.value).toHaveProperty('raw');
+    expect(data.value).toHaveProperty('decimals');
   });
 
-  test('GET /api/v2/tx/:hash?chain=base → Base chain info', async () => {
+  test('chain=base → Base chain info', async () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
     const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
-    expect(res.body.code).toBe(200);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
     const data = res.body.data;
     expect(data.chain).toBe('base');
     expect(data.chainName).toBe('Base');
-    expect(data.explorerUrl).toContain('basescan.org');
-    expect(data.valueSymbol).toBe('ETH');
-    expect(data.gasFeeSymbol).toBe('ETH');
+    expect(data.value.symbol).toBe('ETH');
+    expect(data.value.decimals).toBe(18);
   });
 
-  test('chain=base, PENDING tx → explorerUrl points to basescan', async () => {
+  test('PENDING tx → status PENDING, datetime null', async () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     // receipt stays null (PENDING)
     const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
-    expect(res.body.code).toBe(200);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
     const data = res.body.data;
     expect(data.status).toBe('PENDING');
-    expect(data.explorerUrl).toContain('basescan.org');
-    expect(data.valueSymbol).toBe('ETH');
+    expect(data.datetime).toBeNull();
   });
 
-  test('chain=base, FAILED tx → failureInfo present', async () => {
+  test('FAILED tx → status FAILED', async () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 21000n }));
     mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 21000n));
     const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
-    expect(res.body.code).toBe(200);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
     const data = res.body.data;
     expect(data.status).toBe('FAILED');
     expect(data.chain).toBe('base');
-    expect(data.failureInfo).toBeDefined();
-    expect(data.failureInfo.errorCategory).toBe('OUT_OF_GAS');
   });
 
-  test('unsupported chain → 400', async () => {
+  test('unsupported chain → 400 with UNSUPPORTED_CHAIN error code', async () => {
     const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=ethereum`);
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('UNSUPPORTED_CHAIN');
+    expect(res.body.requestId).toBeDefined();
   });
 
-  test('v2 response includes chain, chainName, explorerUrl fields', async () => {
+  test('v2 response includes chain, chainName, value, datetime fields', async () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
     const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
     const data = res.body.data;
     expect(data).toHaveProperty('chain');
     expect(data).toHaveProperty('chainName');
-    expect(data).toHaveProperty('explorerUrl');
+    expect(data).toHaveProperty('value');
+    expect(data).toHaveProperty('datetime');
+    expect(data).toHaveProperty('status');
+    expect(data).toHaveProperty('txHash');
   });
 
   test('v1 API still works and returns bsc explorer url (backward compat)', async () => {
@@ -480,11 +490,29 @@ describe('v2 API - Base chain support', () => {
     expect(res.body.data.chain).toBeUndefined();
   });
 
-  test('chain=base, tx not found → 404 code in body', async () => {
+  test('tx not found → 404 with TX_NOT_FOUND error code', async () => {
     // getTransaction returns null (default)
     const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
-    expect(res.status).toBe(200);
-    expect(res.body.code).toBe(404);
-    expect(res.body.data).toBeNull();
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('TX_NOT_FOUND');
+  });
+
+  test('invalid hash → 400 with INVALID_TX_HASH error code', async () => {
+    const res = await request(app).get('/api/v2/tx/invalid-hash');
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('INVALID_TX_HASH');
+  });
+
+  test('datetime object has utc, local, timezone, timestamp fields', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}`);
+    const dt = res.body.data.datetime;
+    expect(dt).toHaveProperty('utc');
+    expect(dt).toHaveProperty('local');
+    expect(dt).toHaveProperty('timezone', 'Asia/Shanghai');
+    expect(dt).toHaveProperty('timestamp');
   });
 });
