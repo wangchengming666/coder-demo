@@ -227,7 +227,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const timestamp = block ? block.timestamp : null;
 
     // Format datetime in UTC+8
-    const datetime = timestamp
+    const datetime = timestamp !== null
       ? new Date(timestamp * 1000).toLocaleString('zh-CN', {
           timeZone: 'Asia/Shanghai',
           year: 'numeric', month: '2-digit', day: '2-digit',
