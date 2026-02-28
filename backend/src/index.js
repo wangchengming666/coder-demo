@@ -168,6 +168,176 @@ function getPanicSuggestion(code) {
   return suggestions[code] || '合约发生 Panic 错误，请联系合约开发者。';
 }
 
+// DEX Swap event topics
+const SWAP_V2_TOPIC = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37ef4abab29e4e0fee1d3b3bee';
+const SWAP_V3_TOPIC = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
+
+// Minimal ERC20 ABI for symbol and decimals
+const ERC20_ABI = [
+  'function symbol() view returns (string)',
+  'function decimals() view returns (uint8)',
+];
+
+async function getTokenInfo(provider, address) {
+  try {
+    const contract = new ethers.Contract(address, ERC20_ABI, provider);
+    const [symbol, decimals] = await Promise.all([
+      contract.symbol().catch(() => 'UNKNOWN'),
+      contract.decimals().catch(() => 18),
+    ]);
+    return { symbol, decimals: Number(decimals) };
+  } catch {
+    return { symbol: 'UNKNOWN', decimals: 18 };
+  }
+}
+
+// Known V2 pool → DEX name mapping (can be extended)
+const KNOWN_V2_POOLS = {
+  // PancakeSwap V2 factory on BSC - we identify by checking factory or just label heuristically
+};
+
+async function parseSwapEvents(provider, receipt) {
+  const swaps = [];
+  const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+
+  for (const log of (receipt.logs || [])) {
+    if (!log.topics || log.topics.length === 0) continue;
+    const topic0 = log.topics[0].toLowerCase();
+
+    if (topic0 === SWAP_V2_TOPIC) {
+      // Uniswap V2 / PancakeSwap V2 Swap event
+      // event Swap(address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to)
+      try {
+        const decoded = abiCoder.decode(
+          ['uint256', 'uint256', 'uint256', 'uint256'],
+          log.data
+        );
+        const [amount0In, amount1In, amount0Out, amount1Out] = decoded;
+
+        const poolAddress = log.address;
+
+        // Get token0, token1 from pool
+        const poolAbi = [
+          'function token0() view returns (address)',
+          'function token1() view returns (address)',
+        ];
+        const poolContract = new ethers.Contract(poolAddress, poolAbi, provider);
+        const [token0, token1] = await Promise.all([
+          poolContract.token0().catch(() => null),
+          poolContract.token1().catch(() => null),
+        ]);
+
+        if (!token0 || !token1) continue;
+
+        const [info0, info1] = await Promise.all([
+          getTokenInfo(provider, token0),
+          getTokenInfo(provider, token1),
+        ]);
+
+        // Determine tokenIn and tokenOut
+        let tokenIn, tokenOut;
+        if (amount0In > 0n) {
+          // token0 is in, token1 is out
+          tokenIn = {
+            symbol: info0.symbol,
+            amount: ethers.formatUnits(amount0In, info0.decimals),
+            contractAddress: token0,
+          };
+          tokenOut = {
+            symbol: info1.symbol,
+            amount: ethers.formatUnits(amount1Out, info1.decimals),
+            contractAddress: token1,
+          };
+        } else {
+          // token1 is in, token0 is out
+          tokenIn = {
+            symbol: info1.symbol,
+            amount: ethers.formatUnits(amount1In, info1.decimals),
+            contractAddress: token1,
+          };
+          tokenOut = {
+            symbol: info0.symbol,
+            amount: ethers.formatUnits(amount0Out, info0.decimals),
+            contractAddress: token0,
+          };
+        }
+
+        // Heuristic: if pool is on BSC, likely PancakeSwap V2, else Uniswap V2
+        // We'll label based on chain - provider URL check
+        const dex = 'PancakeSwap V2 / Uniswap V2';
+
+        swaps.push({ dex, poolAddress, tokenIn, tokenOut });
+      } catch (e) {
+        console.warn('Failed to parse V2 swap log:', e.message);
+      }
+    } else if (topic0 === SWAP_V3_TOPIC) {
+      // Uniswap V3 Swap event
+      // event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)
+      try {
+        const decoded = abiCoder.decode(
+          ['int256', 'int256', 'uint160', 'uint128', 'int24'],
+          log.data
+        );
+        const [amount0, amount1] = decoded;
+
+        const poolAddress = log.address;
+
+        const poolAbi = [
+          'function token0() view returns (address)',
+          'function token1() view returns (address)',
+        ];
+        const poolContract = new ethers.Contract(poolAddress, poolAbi, provider);
+        const [token0, token1] = await Promise.all([
+          poolContract.token0().catch(() => null),
+          poolContract.token1().catch(() => null),
+        ]);
+
+        if (!token0 || !token1) continue;
+
+        const [info0, info1] = await Promise.all([
+          getTokenInfo(provider, token0),
+          getTokenInfo(provider, token1),
+        ]);
+
+        // In V3, negative amount means outflow (token leaving pool = tokenOut for user)
+        // positive amount means inflow (token entering pool = tokenIn for user)
+        let tokenIn, tokenOut;
+        if (amount0 > 0n) {
+          // amount0 is positive: user sends token0, receives token1
+          tokenIn = {
+            symbol: info0.symbol,
+            amount: ethers.formatUnits(amount0, info0.decimals),
+            contractAddress: token0,
+          };
+          tokenOut = {
+            symbol: info1.symbol,
+            amount: ethers.formatUnits(-amount1, info1.decimals),
+            contractAddress: token1,
+          };
+        } else {
+          // amount1 is positive: user sends token1, receives token0
+          tokenIn = {
+            symbol: info1.symbol,
+            amount: ethers.formatUnits(amount1, info1.decimals),
+            contractAddress: token1,
+          };
+          tokenOut = {
+            symbol: info0.symbol,
+            amount: ethers.formatUnits(-amount0, info0.decimals),
+            contractAddress: token0,
+          };
+        }
+
+        swaps.push({ dex: 'Uniswap V3', poolAddress, tokenIn, tokenOut });
+      } catch (e) {
+        console.warn('Failed to parse V3 swap log:', e.message);
+      }
+    }
+  }
+
+  return swaps;
+}
+
 // Main API
 app.get('/api/v1/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
@@ -265,7 +435,8 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     };
 
     if (receipt.status === 1) {
-      return res.json({ code: 200, message: 'success', data: baseData });
+      const swaps = await parseSwapEvents(provider, receipt);
+      return res.json({ code: 200, message: 'success', data: { ...baseData, swaps } });
     }
 
     // Failed — analyze

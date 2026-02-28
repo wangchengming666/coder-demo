@@ -14,6 +14,7 @@
 | 交易详情 | From / To / 金额 / Gas / 区块号 / 时间戳 / 确认数 |
 | 失败原因分析 | 自动解析 Revert Reason，给出中文失败原因与修复建议 |
 | 状态分类 | 覆盖 Pending / Success / Failed / Not Found 四种状态 |
+| DEX Swap 解析 | 自动解析交易中的 PancakeSwap V2 / Uniswap V2 / Uniswap V3 Swap 事件，返回 tokenIn/tokenOut 详情 |
 | 快捷跳转 | 一键跳转 BscScan 区块浏览器 |
 | RPC 自动切换 | 主节点失败自动切换备用节点 |
 
@@ -196,6 +197,39 @@ GET /api/v1/tx/:txHash
 ---
 
 ## 字段说明
+
+### swaps 字段（ISSUE-009）
+
+成功交易（`status: "SUCCESS"`）响应中新增 `data.swaps` 数组，包含交易中检测到的所有 DEX Swap 事件：
+
+```json
+{
+  "swaps": [
+    {
+      "dex": "PancakeSwap V2 / Uniswap V2",
+      "poolAddress": "0x...",
+      "tokenIn": {
+        "symbol": "WBNB",
+        "amount": "1.0",
+        "contractAddress": "0x..."
+      },
+      "tokenOut": {
+        "symbol": "CAKE",
+        "amount": "100.0",
+        "contractAddress": "0x..."
+      }
+    }
+  ]
+}
+```
+
+支持协议：
+- **PancakeSwap V2 / Uniswap V2**：topic[0] = `0xd78ad95fa46c994b6551d0da85fc275fe613ce37ef4abab29e4e0fee1d3b3bee`
+- **Uniswap V3**：topic[0] = `0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67`
+
+无 Swap 事件时 `swaps` 为空数组 `[]`。
+
+---
 
 ### datetime 字段
 所有包含区块信息的响应（SUCCESS / FAILED）均返回 `datetime` 字段：

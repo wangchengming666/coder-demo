@@ -33,6 +33,7 @@ jest.mock('ethers', () => {
 
 // Grab the mocked JsonRpcProvider reference
 const { ethers: mockedEthers } = require('ethers');
+const ethersModule = require('ethers');
 const VALID_TX_HASH = '0x' + 'a'.repeat(64);
 
 // Load app after mock is configured
@@ -390,5 +391,160 @@ describe('Health endpoint', () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
+  });
+});
+
+// ─── DEX Swap event parsing ───────────────────────────────────────────────────
+
+describe('DEX Swap event parsing', () => {
+  const SWAP_V2_TOPIC = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37ef4abab29e4e0fee1d3b3bee';
+  const SWAP_V3_TOPIC = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
+  const TOKEN0 = '0x0000000000000000000000000000000000000001';
+  const TOKEN1 = '0x0000000000000000000000000000000000000002';
+  const POOL = '0xPoolAddress00000000000000000000000000001';
+
+  function makeV2SwapLog(amount0In, amount1In, amount0Out, amount1Out) {
+    const abiCoder = actualEthers.AbiCoder.defaultAbiCoder();
+    const data = abiCoder.encode(
+      ['uint256', 'uint256', 'uint256', 'uint256'],
+      [amount0In, amount1In, amount0Out, amount1Out]
+    );
+    return {
+      address: POOL,
+      topics: [SWAP_V2_TOPIC, '0x' + '0'.repeat(64), '0x' + '0'.repeat(64)],
+      data,
+    };
+  }
+
+  function makeV3SwapLog(amount0, amount1) {
+    const abiCoder = actualEthers.AbiCoder.defaultAbiCoder();
+    const data = abiCoder.encode(
+      ['int256', 'int256', 'uint160', 'uint128', 'int24'],
+      [amount0, amount1, 1n, 1000000n, 0]
+    );
+    return {
+      address: POOL,
+      topics: [SWAP_V3_TOPIC, '0x' + '0'.repeat(64), '0x' + '0'.repeat(64)],
+      data,
+    };
+  }
+
+  beforeEach(() => {
+    // Mock Contract calls for token0/token1/symbol/decimals
+    jest.spyOn(mockedEthers, 'Contract').mockImplementation((address, abi) => {
+      const abiStr = JSON.stringify(abi);
+      if (abiStr.includes('token0')) {
+        return {
+          token0: jest.fn().mockResolvedValue(TOKEN0),
+          token1: jest.fn().mockResolvedValue(TOKEN1),
+        };
+      }
+      // ERC20
+      if (address === TOKEN0) {
+        return {
+          symbol: jest.fn().mockResolvedValue('WBNB'),
+          decimals: jest.fn().mockResolvedValue(18),
+        };
+      }
+      return {
+        symbol: jest.fn().mockResolvedValue('CAKE'),
+        decimals: jest.fn().mockResolvedValue(18),
+      };
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('SUCCESS response always has swaps array', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue({ ...makeReceipt(1, 21000n), logs: [] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data).toHaveProperty('swaps');
+    expect(Array.isArray(res.body.data.swaps)).toBe(true);
+  });
+
+  test('no swap logs → swaps is empty array', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue({ ...makeReceipt(1, 21000n), logs: [] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.swaps).toEqual([]);
+  });
+
+  test('V2 swap log (amount0In > 0) → correct swap structure', async () => {
+    const amount0In = 1000000000000000000n; // 1 token0
+    const swapLog = makeV2SwapLog(amount0In, 0n, 0n, 500000000000000000n);
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue({ ...makeReceipt(1, 21000n), logs: [swapLog] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const swaps = res.body.data.swaps;
+    expect(swaps).toHaveLength(1);
+    expect(swaps[0]).toMatchObject({
+      dex: expect.stringContaining('V2'),
+      poolAddress: POOL,
+      tokenIn: { symbol: 'WBNB', contractAddress: TOKEN0 },
+      tokenOut: { symbol: 'CAKE', contractAddress: TOKEN1 },
+    });
+    expect(swaps[0].tokenIn.amount).toBe('1.0');
+    expect(swaps[0].tokenOut.amount).toBe('0.5');
+  });
+
+  test('V2 swap log (amount1In > 0) → token1 is in, token0 is out', async () => {
+    const swapLog = makeV2SwapLog(0n, 2000000000000000000n, 1000000000000000000n, 0n);
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue({ ...makeReceipt(1, 21000n), logs: [swapLog] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const swaps = res.body.data.swaps;
+    expect(swaps).toHaveLength(1);
+    expect(swaps[0].tokenIn.symbol).toBe('CAKE');
+    expect(swaps[0].tokenOut.symbol).toBe('WBNB');
+  });
+
+  test('V3 swap log (amount0 > 0) → token0 in, token1 out', async () => {
+    const swapLog = makeV3SwapLog(1000000000000000000n, -500000000000000000n);
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue({ ...makeReceipt(1, 21000n), logs: [swapLog] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const swaps = res.body.data.swaps;
+    expect(swaps).toHaveLength(1);
+    expect(swaps[0].dex).toBe('Uniswap V3');
+    expect(swaps[0].tokenIn.symbol).toBe('WBNB');
+    expect(swaps[0].tokenOut.symbol).toBe('CAKE');
+    expect(swaps[0].tokenIn.amount).toBe('1.0');
+    expect(swaps[0].tokenOut.amount).toBe('0.5');
+  });
+
+  test('V3 swap log (amount1 > 0) → token1 in, token0 out', async () => {
+    const swapLog = makeV3SwapLog(-1000000000000000000n, 2000000000000000000n);
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue({ ...makeReceipt(1, 21000n), logs: [swapLog] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const swaps = res.body.data.swaps;
+    expect(swaps).toHaveLength(1);
+    expect(swaps[0].dex).toBe('Uniswap V3');
+    expect(swaps[0].tokenIn.symbol).toBe('CAKE');
+    expect(swaps[0].tokenOut.symbol).toBe('WBNB');
+  });
+
+  test('multiple swap logs → multiple swaps', async () => {
+    const v2Log = makeV2SwapLog(1000000000000000000n, 0n, 0n, 500000000000000000n);
+    const v3Log = makeV3SwapLog(1000000000000000000n, -500000000000000000n);
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue({ ...makeReceipt(1, 21000n), logs: [v2Log, v3Log] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.swaps).toHaveLength(2);
+  });
+
+  test('logs without swap topics → ignored', async () => {
+    const irrelevantLog = {
+      address: POOL,
+      topics: ['0x' + 'f'.repeat(64)],
+      data: '0x',
+    };
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue({ ...makeReceipt(1, 21000n), logs: [irrelevantLog] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.swaps).toHaveLength(0);
   });
 });
