@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { ethers } = require('ethers');
+const { randomUUID } = require('crypto');
 
 const app = express();
 app.use(cors());
@@ -171,11 +172,14 @@ function getPanicSuggestion(code) {
 // Main API
 app.get('/api/v1/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
+  const requestId = randomUUID();
+  console.log(`[${requestId}] Request: ${txHash}`);
 
   // Validate txHash format
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     return res.status(400).json({
       code: 400,
+      requestId,
       message: '无效的交易哈希格式，请输入 0x 开头的 64 位十六进制字符串',
       data: null,
     });
@@ -194,6 +198,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     if (!tx) {
       return res.json({
         code: 404,
+        requestId,
         message: '未找到该交易，请确认哈希是否正确或交易是否已广播',
         data: null,
       });
@@ -203,6 +208,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     if (!receipt) {
       return res.json({
         code: 200,
+        requestId,
         message: 'success',
         data: {
           txHash,
@@ -265,28 +271,30 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     };
 
     if (receipt.status === 1) {
-      return res.json({ code: 200, message: 'success', data: baseData });
+      return res.json({ code: 200, requestId, message: 'success', data: baseData });
     }
 
     // Failed — analyze
     const failureInfo = await analyzeFailure(provider, tx, receipt);
     return res.json({
       code: 200,
+      requestId,
       message: 'success',
       data: { ...baseData, failureInfo },
     });
 
   } catch (err) {
-    console.error('Error processing tx:', err);
+    console.error(`[${requestId}] Error:`, err);
     return res.status(500).json({
       code: 500,
+      requestId,
       message: `服务器内部错误: ${err.message}`,
       data: null,
     });
   }
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => { const requestId = randomUUID(); res.json({ status: 'ok', requestId }); });
 
 // Export app for testing; only start server if run directly
 if (require.main === module) {

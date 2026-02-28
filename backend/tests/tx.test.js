@@ -392,3 +392,59 @@ describe('Health endpoint', () => {
     expect(res.body.status).toBe('ok');
   });
 });
+
+
+// ─── requestId field ──────────────────────────────────────────────────────────
+
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+describe('requestId field', () => {
+  test('400 response contains requestId (UUID v4)', async () => {
+    const res = await request(app).get('/api/v1/tx/0xshort');
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('404 response contains requestId (UUID v4)', async () => {
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.code).toBe(404);
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('PENDING response contains requestId (UUID v4)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('PENDING');
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('SUCCESS response contains requestId (UUID v4)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('SUCCESS');
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('FAILED response contains requestId (UUID v4)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 21000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('FAILED');
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('500 response contains requestId (UUID v4)', async () => {
+    mockProvider.getTransaction.mockRejectedValue(new Error('network error'));
+    mockProvider.getTransactionReceipt.mockRejectedValue(new Error('network error'));
+    mockProvider.getBlockNumber.mockRejectedValue(new Error('network error'));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.status).toBe(500);
+    expect(res.body).toHaveProperty('requestId');
+    expect(res.body.requestId).toMatch(UUID_V4_REGEX);
+  });
+  test('each request gets a unique requestId', async () => {
+    const res1 = await request(app).get('/api/v1/tx/0xshort');
+    const res2 = await request(app).get('/api/v1/tx/0xshort');
+    expect(res1.body.requestId).not.toBe(res2.body.requestId);
+  });
+});
