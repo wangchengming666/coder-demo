@@ -165,16 +165,6 @@ GET /api/v1/tx/:txHash
 | 404 | 交易不存在 |
 | 500 | 服务器内部错误 |
 
-### 健康检查
-
-```
-GET /health
-```
-
-```json
-{ "status": "ok" }
-```
-
 ---
 
 ## 失败原因分析
@@ -215,37 +205,6 @@ GET /health
 | datetime | YYYY-MM-DD HH:mm:ss | UTC+8 | 2026-02-28 21:51:25 |
 
 block 为 null 时（极少情况），`datetime` 返回 `null`。
-
----
-
-## 单元测试
-
-```bash
-cd backend
-npm test
-```
-
-测试覆盖率：
-
-| 指标 | 覆盖率 |
-|------|--------|
-| Lines | 95.5% |
-| Statements | 94.94% |
-| Branches | 92.2% |
-| Functions | 85.71% |
-
-覆盖场景：txHash 格式校验、PENDING/SUCCESS/FAILED 状态、OUT_OF_GAS、CONTRACT_REVERT（8 种 reason）、PANIC（6 种 code）、UNKNOWN、500 错误处理、datetime 字段格式与 UTC+8 换算，共 **39 个**测试用例。
-
-### 功能测试（集成测试）
-
-```bash
-cd backend
-npm run test:integration
-```
-
-真实调用 BSC 节点，验证：
-- 已知成功交易返回正确字段（status、datetime、from、to 等）
-- 不存在的 hash 返回 code=404
 
 ---
 
