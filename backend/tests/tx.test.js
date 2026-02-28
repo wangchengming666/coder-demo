@@ -392,3 +392,99 @@ describe('Health endpoint', () => {
     expect(res.body.status).toBe('ok');
   });
 });
+
+// ─── v2 API - Base chain tests ────────────────────────────────────────────────
+
+describe('v2 API - Base chain support', () => {
+  test('GET /api/v2/tx/:hash without chain param defaults to bsc', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}`);
+    expect(res.body.code).toBe(200);
+    const data = res.body.data;
+    expect(data.chain).toBe('bsc');
+    expect(data.chainName).toBe('BNB Smart Chain');
+    expect(data.explorerUrl).toContain('bscscan.com');
+    expect(data.valueSymbol).toBe('BNB');
+  });
+
+  test('GET /api/v2/tx/:hash?chain=bsc → BSC chain info', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=bsc`);
+    expect(res.body.code).toBe(200);
+    const data = res.body.data;
+    expect(data.chain).toBe('bsc');
+    expect(data.explorerUrl).toContain('bscscan.com');
+  });
+
+  test('GET /api/v2/tx/:hash?chain=base → Base chain info', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
+    expect(res.body.code).toBe(200);
+    const data = res.body.data;
+    expect(data.chain).toBe('base');
+    expect(data.chainName).toBe('Base');
+    expect(data.explorerUrl).toContain('basescan.org');
+    expect(data.valueSymbol).toBe('ETH');
+    expect(data.gasFeeSymbol).toBe('ETH');
+  });
+
+  test('chain=base, PENDING tx → explorerUrl points to basescan', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    // receipt stays null (PENDING)
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
+    expect(res.body.code).toBe(200);
+    const data = res.body.data;
+    expect(data.status).toBe('PENDING');
+    expect(data.explorerUrl).toContain('basescan.org');
+    expect(data.valueSymbol).toBe('ETH');
+  });
+
+  test('chain=base, FAILED tx → failureInfo present', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 21000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 21000n));
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
+    expect(res.body.code).toBe(200);
+    const data = res.body.data;
+    expect(data.status).toBe('FAILED');
+    expect(data.chain).toBe('base');
+    expect(data.failureInfo).toBeDefined();
+    expect(data.failureInfo.errorCategory).toBe('OUT_OF_GAS');
+  });
+
+  test('unsupported chain → 400', async () => {
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=ethereum`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe(400);
+  });
+
+  test('v2 response includes chain, chainName, explorerUrl fields', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
+    const data = res.body.data;
+    expect(data).toHaveProperty('chain');
+    expect(data).toHaveProperty('chainName');
+    expect(data).toHaveProperty('explorerUrl');
+  });
+
+  test('v1 API still works and returns bsc explorer url (backward compat)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.code).toBe(200);
+    expect(res.body.data.explorerUrl).toContain('bscscan.com');
+    // v1 does not return chain field (backward compat)
+    expect(res.body.data.chain).toBeUndefined();
+  });
+
+  test('chain=base, tx not found → 404 code in body', async () => {
+    // getTransaction returns null (default)
+    const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=base`);
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBe(404);
+    expect(res.body.data).toBeNull();
+  });
+});

@@ -1,4 +1,5 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const { ethers } = require('ethers');
@@ -14,15 +15,35 @@ app.use(express.static(path.join(__dirname, '../../frontend/dist')));
 const PORT = process.env.PORT || 3000;
 const BSC_RPC_PRIMARY = process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org';
 const BSC_RPC_FALLBACK = process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org';
+const BASE_RPC_PRIMARY = process.env.BASE_RPC_PRIMARY || 'https://mainnet.base.org';
+const BASE_RPC_FALLBACK = process.env.BASE_RPC_FALLBACK || 'https://base.drpc.org';
 
-async function getProvider() {
+const CHAIN_CONFIG = {
+  bsc: {
+    name: 'BNB Smart Chain',
+    rpcPrimary: BSC_RPC_PRIMARY,
+    rpcFallback: BSC_RPC_FALLBACK,
+    explorerUrl: (txHash) => `https://bscscan.com/tx/${txHash}`,
+    valueSymbol: 'BNB',
+  },
+  base: {
+    name: 'Base',
+    rpcPrimary: BASE_RPC_PRIMARY,
+    rpcFallback: BASE_RPC_FALLBACK,
+    explorerUrl: (txHash) => `https://basescan.org/tx/${txHash}`,
+    valueSymbol: 'ETH',
+  },
+};
+
+async function getProvider(chain = 'bsc') {
+  const config = CHAIN_CONFIG[chain] || CHAIN_CONFIG.bsc;
   try {
-    const provider = new ethers.JsonRpcProvider(BSC_RPC_PRIMARY);
+    const provider = new ethers.JsonRpcProvider(config.rpcPrimary);
     await provider.getBlockNumber();
     return provider;
   } catch (e) {
     console.warn('Primary RPC failed, switching to fallback:', e.message);
-    return new ethers.JsonRpcProvider(BSC_RPC_FALLBACK);
+    return new ethers.JsonRpcProvider(config.rpcFallback);
   }
 }
 
@@ -168,7 +189,140 @@ function getPanicSuggestion(code) {
   return suggestions[code] || '合约发生 Panic 错误，请联系合约开发者。';
 }
 
-// Main API
+// ─── Helper: build tx response data ──────────────────────────────────────────
+
+function buildDatetime(timestamp) {
+  if (timestamp === null || timestamp === undefined) return null;
+  return new Date(timestamp * 1000).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).replace(/\//g, '-');
+}
+
+// ─── V2 API: multi-chain support ──────────────────────────────────────────────
+
+app.get('/api/v2/tx/:txHash', async (req, res) => {
+  const { txHash } = req.params;
+  const chain = (req.query.chain || 'bsc').toLowerCase();
+
+  if (!CHAIN_CONFIG[chain]) {
+    return res.status(400).json({
+      code: 400,
+      message: `不支持的链: ${chain}。目前支持: ${Object.keys(CHAIN_CONFIG).join(', ')}`,
+      data: null,
+    });
+  }
+
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    return res.status(400).json({
+      code: 400,
+      message: '无效的交易哈希格式，请输入 0x 开头的 64 位十六进制字符串',
+      data: null,
+    });
+  }
+
+  const chainConfig = CHAIN_CONFIG[chain];
+
+  try {
+    const provider = await getProvider(chain);
+
+    const [tx, receipt, currentBlock] = await Promise.all([
+      provider.getTransaction(txHash),
+      provider.getTransactionReceipt(txHash),
+      provider.getBlockNumber(),
+    ]);
+
+    if (!tx) {
+      return res.json({
+        code: 404,
+        message: '未找到该交易，请确认哈希是否正确或交易是否已广播',
+        data: null,
+      });
+    }
+
+    if (!receipt) {
+      return res.json({
+        code: 200,
+        message: 'success',
+        data: {
+          txHash,
+          chain,
+          chainName: chainConfig.name,
+          status: 'PENDING',
+          from: tx.from,
+          to: tx.to,
+          value: ethers.formatEther(tx.value),
+          valueSymbol: chainConfig.valueSymbol,
+          valueRaw: tx.value.toString(),
+          gasLimit: tx.gasLimit.toString(),
+          gasPrice: ethers.formatUnits(tx.gasPrice, 'gwei'),
+          gasPriceUnit: 'Gwei',
+          nonce: tx.nonce,
+          inputData: tx.data,
+          explorerUrl: chainConfig.explorerUrl(txHash),
+        },
+      });
+    }
+
+    const block = await provider.getBlock(receipt.blockNumber);
+    const timestamp = block ? block.timestamp : null;
+    const datetime = buildDatetime(timestamp);
+
+    const gasUsed = receipt.gasUsed;
+    const gasPrice = tx.gasPrice;
+    const gasFeeWei = gasUsed * gasPrice;
+
+    const baseData = {
+      txHash,
+      chain,
+      chainName: chainConfig.name,
+      status: receipt.status === 1 ? 'SUCCESS' : 'FAILED',
+      blockNumber: receipt.blockNumber,
+      blockHash: receipt.blockHash,
+      timestamp,
+      datetime,
+      from: tx.from,
+      to: tx.to,
+      value: ethers.formatEther(tx.value),
+      valueSymbol: chainConfig.valueSymbol,
+      valueRaw: tx.value.toString(),
+      gasLimit: tx.gasLimit.toString(),
+      gasUsed: gasUsed.toString(),
+      gasPrice: ethers.formatUnits(gasPrice, 'gwei'),
+      gasPriceUnit: 'Gwei',
+      gasFee: ethers.formatEther(gasFeeWei),
+      gasFeeSymbol: chainConfig.valueSymbol,
+      nonce: tx.nonce,
+      inputData: tx.data,
+      confirmations: currentBlock - receipt.blockNumber,
+      explorerUrl: chainConfig.explorerUrl(txHash),
+    };
+
+    if (receipt.status === 1) {
+      return res.json({ code: 200, message: 'success', data: baseData });
+    }
+
+    const failureInfo = await analyzeFailure(provider, tx, receipt);
+    return res.json({
+      code: 200,
+      message: 'success',
+      data: { ...baseData, failureInfo },
+    });
+
+  } catch (err) {
+    console.error('Error processing tx:', err);
+    return res.status(500).json({
+      code: 500,
+      message: `服务器内部错误: ${err.message}`,
+      data: null,
+    });
+  }
+});
+
+// ─── V1 API: BSC only (kept for backward compatibility) ───────────────────────
+
 app.get('/api/v1/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
 
@@ -182,7 +336,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
   }
 
   try {
-    const provider = await getProvider();
+    const provider = await getProvider('bsc');
 
     const [tx, receipt, currentBlock] = await Promise.all([
       provider.getTransaction(txHash),
@@ -227,14 +381,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const timestamp = block ? block.timestamp : null;
 
     // Format datetime in UTC+8
-    const datetime = timestamp !== null
-      ? new Date(timestamp * 1000).toLocaleString('zh-CN', {
-          timeZone: 'Asia/Shanghai',
-          year: 'numeric', month: '2-digit', day: '2-digit',
-          hour: '2-digit', minute: '2-digit', second: '2-digit',
-          hour12: false,
-        }).replace(/\//g, '-')
-      : null;
+    const datetime = buildDatetime(timestamp);
 
     const gasUsed = receipt.gasUsed;
     const gasPrice = tx.gasPrice;
@@ -292,8 +439,10 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`TxTracer Backend running on http://localhost:${PORT}`);
-    console.log(`Primary RPC: ${BSC_RPC_PRIMARY}`);
-    console.log(`Fallback RPC: ${BSC_RPC_FALLBACK}`);
+    console.log(`BSC Primary RPC: ${BSC_RPC_PRIMARY}`);
+    console.log(`BSC Fallback RPC: ${BSC_RPC_FALLBACK}`);
+    console.log(`Base Primary RPC: ${BASE_RPC_PRIMARY}`);
+    console.log(`Base Fallback RPC: ${BASE_RPC_FALLBACK}`);
   });
 }
 

@@ -4,16 +4,27 @@
     <div class="header">
       <div class="header-inner">
         <span class="logo">🔍</span>
-        <h1 class="title">TxTracer <span class="subtitle">for BSC</span></h1>
-        <p class="desc">BSC 链上交易查询与失败原因分析工具</p>
+        <h1 class="title">TxTracer <span class="subtitle">多链</span></h1>
+        <p class="desc">EVM 链上交易查询与失败原因分析工具</p>
       </div>
     </div>
 
     <!-- Search Area -->
     <div class="search-area">
+      <!-- Chain Selector -->
+      <div class="chain-selector">
+        <a-radio-group v-model:value="selectedChain" button-style="solid" size="large">
+          <a-radio-button value="bsc">
+            <span class="chain-btn-inner">🟡 BSC</span>
+          </a-radio-button>
+          <a-radio-button value="base">
+            <span class="chain-btn-inner">🔵 Base</span>
+          </a-radio-button>
+        </a-radio-group>
+      </div>
       <a-input-search
         v-model:value="txHash"
-        placeholder="输入交易哈希 (0x...)"
+        :placeholder="`输入 ${chainLabel} 交易哈希 (0x...)`"
         size="large"
         :loading="loading"
         enter-button="查询"
@@ -59,7 +70,7 @@
         <TxBasicCard :data="txData" />
         <div class="btn-row">
           <a-button type="primary" @click="handleSearch">🔄 刷新</a-button>
-          <a-button :href="txData.explorerUrl" target="_blank">在 BscScan 查看 ↗</a-button>
+          <a-button :href="txData.explorerUrl" target="_blank">在 {{ explorerName }} 查看 ↗</a-button>
         </div>
       </div>
 
@@ -68,7 +79,7 @@
         <a-alert type="success" show-icon message="交易成功 (SUCCESS)" class="mb-16" />
         <TxBasicCard :data="txData" />
         <div class="btn-row">
-          <a-button :href="txData.explorerUrl" target="_blank">在 BscScan 查看 ↗</a-button>
+          <a-button :href="txData.explorerUrl" target="_blank">在 {{ explorerName }} 查看 ↗</a-button>
         </div>
       </div>
 
@@ -104,7 +115,7 @@
 
         <TxBasicCard :data="txData" />
         <div class="btn-row">
-          <a-button :href="txData.explorerUrl" target="_blank">在 BscScan 查看 ↗</a-button>
+          <a-button :href="txData.explorerUrl" target="_blank">在 {{ explorerName }} 查看 ↗</a-button>
         </div>
       </div>
 
@@ -113,9 +124,9 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { message } from 'ant-design-vue';
-import { fetchTransaction } from './api/tx.js';
+import { fetchTransactionV2 } from './api/tx.js';
 import TxBasicCard from './components/TxBasicCard.vue';
 
 const txHash = ref('');
@@ -123,6 +134,16 @@ const loading = ref(false);
 const state = ref('idle'); // idle | error | not_found | pending | success | failed
 const txData = ref(null);
 const errorMsg = ref('');
+const selectedChain = ref('bsc');
+
+const chainLabel = computed(() => {
+  return selectedChain.value === 'base' ? 'Base' : 'BSC';
+});
+
+const explorerName = computed(() => {
+  if (!txData.value) return selectedChain.value === 'base' ? 'Basescan' : 'BscScan';
+  return txData.value.chain === 'base' ? 'Basescan' : 'BscScan';
+});
 
 function reset() {
   state.value = 'idle';
@@ -145,14 +166,14 @@ async function handleSearch() {
   state.value = 'idle';
 
   try {
-    const result = await fetchTransaction(hash);
+    const result = await fetchTransactionV2(hash, selectedChain.value);
 
     if (result.code === 404) {
       state.value = 'not_found';
       return;
     }
 
-    if (result.code !== 0) {
+    if (result.code !== 200) {
       state.value = 'error';
       errorMsg.value = result.message || '查询失败';
       return;
@@ -228,6 +249,17 @@ body { margin: 0; background: #f0f2f5; font-family: -apple-system, BlinkMacSyste
   padding: 0 20px;
   position: relative;
   z-index: 10;
+}
+
+.chain-selector {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.chain-btn-inner {
+  font-weight: 600;
+  letter-spacing: 0.5px;
 }
 
 .search-input {
