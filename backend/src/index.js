@@ -202,7 +202,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     // PENDING
     if (!receipt) {
       return res.json({
-        code: 0,
+        code: 200,
         message: 'success',
         data: {
           txHash,
@@ -265,13 +265,13 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     };
 
     if (receipt.status === 1) {
-      return res.json({ code: 0, message: 'success', data: baseData });
+      return res.json({ code: 200, message: 'success', data: baseData });
     }
 
     // Failed — analyze
     const failureInfo = await analyzeFailure(provider, tx, receipt);
     return res.json({
-      code: 0,
+      code: 200,
       message: 'success',
       data: { ...baseData, failureInfo },
     });
