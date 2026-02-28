@@ -130,7 +130,8 @@ GET /api/v1/tx/:txHash
     "nonce": 88,
     "inputData": "0x",
     "confirmations": 500,
-    "explorerUrl": "https://bscscan.com/tx/0xabc123..."
+    "explorerUrl": "https://bscscan.com/tx/0xabc123...",
+    "datetime": "2026-02-28 21:51:25"
   }
 }
 ```
@@ -204,6 +205,19 @@ GET /health
 
 ---
 
+## 字段说明
+
+### datetime 字段
+所有包含区块信息的响应（SUCCESS / FAILED）均返回 `datetime` 字段：
+
+| 字段 | 格式 | 时区 | 示例 |
+|------|------|------|------|
+| datetime | YYYY-MM-DD HH:mm:ss | UTC+8 | 2026-02-28 21:51:25 |
+
+block 为 null 时（极少情况），`datetime` 返回 `null`。
+
+---
+
 ## 单元测试
 
 ```bash
@@ -220,7 +234,18 @@ npm test
 | Branches | 92.2% |
 | Functions | 85.71% |
 
-覆盖场景：txHash 格式校验、PENDING/SUCCESS/FAILED 状态、OUT_OF_GAS、CONTRACT_REVERT（8 种 reason）、PANIC（6 种 code）、UNKNOWN、500 错误处理，共 35 个测试用例。
+覆盖场景：txHash 格式校验、PENDING/SUCCESS/FAILED 状态、OUT_OF_GAS、CONTRACT_REVERT（8 种 reason）、PANIC（6 种 code）、UNKNOWN、500 错误处理、datetime 字段格式与 UTC+8 换算，共 **39 个**测试用例。
+
+### 功能测试（集成测试）
+
+```bash
+cd backend
+npm run test:integration
+```
+
+真实调用 BSC 节点，验证：
+- 已知成功交易返回正确字段（status、datetime、from、to 等）
+- 不存在的 hash 返回 code=404
 
 ---
 
