@@ -4,13 +4,19 @@
     <div class="header">
       <div class="header-inner">
         <span class="logo">🔍</span>
-        <h1 class="title">TxTracer <span class="subtitle">for BSC</span></h1>
-        <p class="desc">BSC 链上交易查询与失败原因分析工具</p>
+        <h1 class="title">TxTracer <span class="subtitle">Multi-Chain</span></h1>
+        <p class="desc">多链交易查询与失败原因分析工具，支持 BNB Smart Chain 和 Arbitrum One</p>
       </div>
     </div>
 
     <!-- Search Area -->
     <div class="search-area">
+      <div class="mb-8">
+        <a-select v-model:value="selectedChain" size="large" style="min-width:200px;">
+          <a-select-option value="bsc">BNB Smart Chain (BSC)</a-select-option>
+          <a-select-option value="arb">Arbitrum One</a-select-option>
+        </a-select>
+      </div>
       <a-input-search
         v-model:value="txHash"
         placeholder="输入交易哈希 (0x...)"
@@ -59,7 +65,7 @@
         <TxBasicCard :data="txData" />
         <div class="btn-row">
           <a-button type="primary" @click="handleSearch">🔄 刷新</a-button>
-          <a-button :href="txData.explorerUrl" target="_blank">在 BscScan 查看 ↗</a-button>
+          <a-button :href="txData.explorerUrl" target="_blank">在区块浏览器查看 ↗</a-button>
         </div>
       </div>
 
@@ -68,7 +74,7 @@
         <a-alert type="success" show-icon message="交易成功 (SUCCESS)" class="mb-16" />
         <TxBasicCard :data="txData" />
         <div class="btn-row">
-          <a-button :href="txData.explorerUrl" target="_blank">在 BscScan 查看 ↗</a-button>
+          <a-button :href="txData.explorerUrl" target="_blank">在区块浏览器查看 ↗</a-button>
         </div>
       </div>
 
@@ -104,7 +110,7 @@
 
         <TxBasicCard :data="txData" />
         <div class="btn-row">
-          <a-button :href="txData.explorerUrl" target="_blank">在 BscScan 查看 ↗</a-button>
+          <a-button :href="txData.explorerUrl" target="_blank">在区块浏览器查看 ↗</a-button>
         </div>
       </div>
 
@@ -119,6 +125,7 @@ import { fetchTransaction } from './api/tx.js';
 import TxBasicCard from './components/TxBasicCard.vue';
 
 const txHash = ref('');
+const selectedChain = ref('bsc');
 const loading = ref(false);
 const state = ref('idle'); // idle | error | not_found | pending | success | failed
 const txData = ref(null);
@@ -145,7 +152,7 @@ async function handleSearch() {
   state.value = 'idle';
 
   try {
-    const result = await fetchTransaction(hash);
+    const result = await fetchTransaction(hash, selectedChain.value);
 
     if (result.code === 404) {
       state.value = 'not_found';

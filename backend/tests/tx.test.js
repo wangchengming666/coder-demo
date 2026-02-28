@@ -392,3 +392,93 @@ describe('Health endpoint', () => {
     expect(res.body.status).toBe('ok');
   });
 });
+
+
+// --- v2 API tests ---
+
+describe('v2 API - validation', () => {
+  test('invalid hash -> 400', async () => {
+    const res = await request(app).get('/api/v2/tx/0xshort?chain=bsc');
+    expect(res.status).toBe(400); expect(res.body.code).toBe(400);
+  });
+  test('unsupported chain -> 400', async () => {
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=eth');
+    expect(res.status).toBe(400); expect(res.body.code).toBe(400);
+  });
+});
+
+describe('v2 API - BSC', () => {
+  test('not found -> 404', async () => {
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=bsc');
+    expect(res.body.code).toBe(404);
+  });
+  test('PENDING -> bsc, BNB', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=bsc');
+    const d = res.body.data;
+    expect(d.status).toBe('PENDING'); expect(d.chain).toBe('bsc');
+    expect(d.valueSymbol).toBe('BNB'); expect(d.explorerUrl).toContain('bscscan.com');
+  });
+  test('SUCCESS -> no l1Fee', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=bsc');
+    expect(res.body.data.status).toBe('SUCCESS');
+    expect(res.body.data.l1Fee).toBeUndefined();
+  });
+  test('FAILED -> failureInfo', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 21000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 21000n));
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=bsc');
+    expect(res.body.data.failureInfo.errorCategory).toBe('OUT_OF_GAS');
+  });
+  test('default chain bsc', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH);
+    expect(res.body.data.chain).toBe('bsc');
+  });
+});
+
+describe('v2 API - Arbitrum', () => {
+  test('not found -> 404', async () => {
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=arb');
+    expect(res.body.code).toBe(404);
+  });
+  test('PENDING -> arb, ETH, arbiscan', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=arb');
+    const d = res.body.data;
+    expect(d.chain).toBe('arb'); expect(d.chainName).toBe('Arbitrum One');
+    expect(d.valueSymbol).toBe('ETH'); expect(d.explorerUrl).toContain('arbiscan.io');
+  });
+  test('SUCCESS without l1Fee -> no l1Fee fields', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=arb');
+    expect(res.body.data.gasFeeSymbol).toBe('ETH');
+    expect(res.body.data.l1Fee).toBeUndefined();
+  });
+  test('SUCCESS with l1Fee -> l1Fee returned', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    const receipt = Object.assign({}, makeReceipt(1, 21000n), { l1Fee: '1000000000000000' });
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=arb');
+    expect(res.body.data.l1Fee).toBe('0.001');
+    expect(res.body.data.l1FeeRaw).toBe('1000000000000000');
+  });
+  test('FAILED -> failureInfo, chain arb', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 21000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 21000n));
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=arb');
+    expect(res.body.data.chain).toBe('arb');
+    expect(res.body.data.failureInfo.errorCategory).toBe('OUT_OF_GAS');
+  });
+  test('server error -> 500', async () => {
+    mockProvider.getBlockNumber.mockRejectedValue(new Error('rpc error'));
+    mockProvider.getTransaction.mockRejectedValue(new Error('rpc error'));
+    mockProvider.getTransactionReceipt.mockRejectedValue(new Error('rpc error'));
+    const res = await request(app).get('/api/v2/tx/' + VALID_TX_HASH + '?chain=arb');
+    expect(res.status).toBe(500);
+  });
+});

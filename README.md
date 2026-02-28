@@ -1,6 +1,6 @@
-# TxTracer for BSC
+# TxTracer Multi-Chain
 
-> BSC 链上交易查询与失败原因分析工具
+> 多链交易查询与失败原因分析工具，支持 BNB Smart Chain 和 Arbitrum One
 
 不只告诉你「交易失败了」，还告诉你**为什么失败、怎么修复**。
 
@@ -10,11 +10,13 @@
 
 | 功能 | 说明 |
 |------|------|
-| 交易查询 | 输入 TxHash，一键查询 BSC 链上状态 |
+| 多链支持 | 支持 BNB Smart Chain (BSC) 和 Arbitrum One |
+| 交易查询 | 输入 TxHash，一键查询链上状态 |
 | 交易详情 | From / To / 金额 / Gas / 区块号 / 时间戳 / 确认数 |
 | 失败原因分析 | 自动解析 Revert Reason，给出中文失败原因与修复建议 |
 | 状态分类 | 覆盖 Pending / Success / Failed / Not Found 四种状态 |
-| 快捷跳转 | 一键跳转 BscScan 区块浏览器 |
+| Arbitrum L1 费用 | Arbitrum 交易额外返回 l1Fee |
+| 快捷跳转 | 一键跳转对应链的区块浏览器 |
 | RPC 自动切换 | 主节点失败自动切换备用节点 |
 
 ---
@@ -67,6 +69,8 @@ node src/index.js
 ```env
 BSC_RPC_PRIMARY=https://bsc-dataseed1.binance.org
 BSC_RPC_FALLBACK=https://bsc-dataseed2.binance.org
+ARB_RPC_PRIMARY=https://arb1.arbitrum.io/rpc
+ARB_RPC_FALLBACK=https://rpc.ankr.com/arbitrum
 PORT=3000
 ```
 
