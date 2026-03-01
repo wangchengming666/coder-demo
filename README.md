@@ -14,6 +14,7 @@
 | 交易详情 | From / To / 金额 / Gas / 区块号 / 时间戳 / 确认数 |
 | 失败原因分析 | 自动解析 Revert Reason，给出中文失败原因与修复建议 |
 | 状态分类 | 覆盖 Pending / Success / Failed / Not Found 四种状态 |
+| 内部交易 | 通过 `debug_traceTransaction` 获取嵌套内部调用列表（需节点支持） |
 | 快捷跳转 | 一键跳转 BscScan 区块浏览器 |
 | RPC 自动切换 | 主节点失败自动切换备用节点 |
 
@@ -67,8 +68,13 @@ node src/index.js
 ```env
 BSC_RPC_PRIMARY=https://bsc-dataseed1.binance.org
 BSC_RPC_FALLBACK=https://bsc-dataseed2.binance.org
+# 是否支持 debug_traceTransaction（默认 false）
+BSC_RPC_PRIMARY_SUPPORTS_DEBUG=false
+BSC_RPC_FALLBACK_SUPPORTS_DEBUG=false
 PORT=3000
 ```
+
+> 如使用支持 debug 的私有节点（如 QuickNode、Alchemy），请将 `supportsDebug` 对应变量设为 `true`。
 
 ### 2. 前端（开发模式）
 
@@ -131,7 +137,35 @@ GET /api/v1/tx/:txHash
     "inputData": "0x",
     "confirmations": 500,
     "explorerUrl": "https://bscscan.com/tx/0xabc123...",
-    "datetime": "2026-02-28 21:51:25"
+    "datetime": "2026-02-28 21:51:25",
+    "internalTxs": [
+      {
+        "type": "CALL",
+        "from": "0xSenderAddress",
+        "to": "0xContractAddress",
+        "value": "0.0",
+        "valueRaw": "0",
+        "gas": "0x12345",
+        "gasUsed": "0x5678",
+        "success": true,
+        "error": null
+      }
+    ]
+  }
+}
+```
+
+> 若 RPC 节点不支持 `debug_traceTransaction`，则 `internalTxs` 为 `null`，并附带 `debugUnsupported: true`：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "txHash": "0xabc123...def456",
+    "status": "SUCCESS",
+    "internalTxs": null,
+    "debugUnsupported": true
   }
 }
 ```
@@ -205,6 +239,35 @@ GET /api/v1/tx/:txHash
 | datetime | YYYY-MM-DD HH:mm:ss | UTC+8 | 2026-02-28 21:51:25 |
 
 block 为 null 时（极少情况），`datetime` 返回 `null`。
+
+---
+
+## 内部交易（Internal Transactions）
+
+通过 `debug_traceTransaction` RPC 方法获取交易中的内部调用链路，支持递归展开为平铺列表。
+
+### internalTxs 字段说明
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| type | String | 调用类型：`CALL` / `DELEGATECALL` / `CREATE` |
+| from | String | 调用方地址 |
+| to | String | 被调用方地址（CREATE 时为 null） |
+| value | String | 转移原生代币金额（BNB，格式化） |
+| valueRaw | String | 原始金额（wei） |
+| gas | String | 分配 Gas（16 进制） |
+| gasUsed | String | 实际消耗 Gas（16 进制） |
+| success | Boolean | 该内部调用是否成功 |
+| error | String\|null | 失败原因（如有） |
+
+### 节点配置
+
+| 环境变量 | 说明 | 默认值 |
+|----------|------|--------|
+| `BSC_RPC_PRIMARY_SUPPORTS_DEBUG` | 主节点是否支持 debug_traceTransaction | `false` |
+| `BSC_RPC_FALLBACK_SUPPORTS_DEBUG` | 备用节点是否支持 debug_traceTransaction | `false` |
+
+不支持 debug 的节点返回 `internalTxs: null` + `debugUnsupported: true`。
 
 ---
 

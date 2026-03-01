@@ -36,7 +36,17 @@ const { ethers: mockedEthers } = require('ethers');
 const VALID_TX_HASH = '0x' + 'a'.repeat(64);
 
 // Load app after mock is configured
-const { app } = require('../src/index');
+const { app, flattenCallTrace, getInternalTransactions } = require('../src/index');
+
+// Mock global fetch for debug_traceTransaction tests
+let mockFetch = jest.fn();
+global.fetch = mockFetch;
+
+function mockFetchResponse(data) {
+  mockFetch.mockResolvedValue({
+    json: jest.fn().mockResolvedValue(data),
+  });
+}
 
 // Base tx object
 function makeTx(overrides = {}) {
@@ -390,5 +400,166 @@ describe('Health endpoint', () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
+  });
+});
+
+// ─── flattenCallTrace unit tests ──────────────────────────────────────────────
+
+describe('flattenCallTrace', () => {
+  test('single call frame → 1 item', () => {
+    const frame = {
+      type: 'CALL',
+      from: '0xA',
+      to: '0xB',
+      value: '0xde0b6b3a7640000', // 1 ETH in hex
+      gas: '0x5208',
+      gasUsed: '0x5208',
+    };
+    const result = flattenCallTrace(frame);
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('CALL');
+    expect(result[0].from).toBe('0xA');
+    expect(result[0].to).toBe('0xB');
+    expect(result[0].success).toBe(true);
+    expect(result[0].error).toBeNull();
+    expect(result[0].valueRaw).toBe(BigInt('0xde0b6b3a7640000').toString());
+  });
+
+  test('value=0x0 → valueRaw is "0", value is "0.0"', () => {
+    const frame = { type: 'CALL', from: '0xA', to: '0xB', value: '0x0', gas: '0x0', gasUsed: '0x0' };
+    const result = flattenCallTrace(frame);
+    expect(result[0].valueRaw).toBe('0');
+  });
+
+  test('no value field → valueRaw is "0"', () => {
+    const frame = { type: 'DELEGATECALL', from: '0xA', to: '0xB', gas: '0x0', gasUsed: '0x0' };
+    const result = flattenCallTrace(frame);
+    expect(result[0].valueRaw).toBe('0');
+  });
+
+  test('error field → success=false, error set', () => {
+    const frame = { type: 'CALL', from: '0xA', to: '0xB', gas: '0x0', gasUsed: '0x0', error: 'execution reverted' };
+    const result = flattenCallTrace(frame);
+    expect(result[0].success).toBe(false);
+    expect(result[0].error).toBe('execution reverted');
+  });
+
+  test('nested calls → flat list', () => {
+    const frame = {
+      type: 'CALL',
+      from: '0xA',
+      to: '0xB',
+      gas: '0x0',
+      gasUsed: '0x0',
+      calls: [
+        { type: 'CALL', from: '0xB', to: '0xC', gas: '0x0', gasUsed: '0x0',
+          calls: [
+            { type: 'DELEGATECALL', from: '0xC', to: '0xD', gas: '0x0', gasUsed: '0x0' },
+          ],
+        },
+      ],
+    };
+    const result = flattenCallTrace(frame);
+    expect(result).toHaveLength(3);
+    expect(result[0].from).toBe('0xA');
+    expect(result[1].from).toBe('0xB');
+    expect(result[2].from).toBe('0xC');
+    expect(result[2].type).toBe('DELEGATECALL');
+  });
+
+  test('null frame → empty array', () => {
+    expect(flattenCallTrace(null)).toEqual([]);
+  });
+
+  test('CREATE type → included', () => {
+    const frame = { type: 'CREATE', from: '0xA', to: null, gas: '0x0', gasUsed: '0x0' };
+    const result = flattenCallTrace(frame);
+    expect(result[0].type).toBe('CREATE');
+    expect(result[0].to).toBeNull();
+  });
+});
+
+// ─── getInternalTransactions unit tests ──────────────────────────────────────
+
+describe('getInternalTransactions', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  test('supportsDebug=false → { internalTxs: null, debugUnsupported: true }', async () => {
+    const result = await getInternalTransactions('http://rpc', false, VALID_TX_HASH);
+    expect(result.internalTxs).toBeNull();
+    expect(result.debugUnsupported).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test('supportsDebug=true, valid response → flat list', async () => {
+    mockFetchResponse({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        type: 'CALL',
+        from: '0xA',
+        to: '0xB',
+        gas: '0x5208',
+        gasUsed: '0x5208',
+        calls: [
+          { type: 'CALL', from: '0xB', to: '0xC', gas: '0x1000', gasUsed: '0x800' },
+        ],
+      },
+    });
+    const result = await getInternalTransactions('http://rpc', true, VALID_TX_HASH);
+    expect(result.debugUnsupported).toBe(false);
+    expect(Array.isArray(result.internalTxs)).toBe(true);
+    expect(result.internalTxs).toHaveLength(2);
+  });
+
+  test('supportsDebug=true, RPC error → { internalTxs: null, debugUnsupported: true }', async () => {
+    mockFetchResponse({ jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Method not found' } });
+    const result = await getInternalTransactions('http://rpc', true, VALID_TX_HASH);
+    expect(result.internalTxs).toBeNull();
+    expect(result.debugUnsupported).toBe(true);
+  });
+
+  test('supportsDebug=true, fetch throws → { internalTxs: null, debugUnsupported: true }', async () => {
+    mockFetch.mockRejectedValue(new Error('network error'));
+    const result = await getInternalTransactions('http://rpc', true, VALID_TX_HASH);
+    expect(result.internalTxs).toBeNull();
+    expect(result.debugUnsupported).toBe(true);
+  });
+
+  test('supportsDebug=true, null result → empty array', async () => {
+    mockFetchResponse({ jsonrpc: '2.0', id: 1, result: null });
+    const result = await getInternalTransactions('http://rpc', true, VALID_TX_HASH);
+    expect(result.internalTxs).toEqual([]);
+    expect(result.debugUnsupported).toBe(false);
+  });
+});
+
+// ─── API internalTxs integration ─────────────────────────────────────────────
+
+describe('API internalTxs field', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+    // Default: node doesn't support debug (supportsDebug=false by default via env)
+    mockFetchResponse({ jsonrpc: '2.0', id: 1, result: null });
+  });
+
+  test('SUCCESS tx → internalTxs field present (null when supportsDebug=false)', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data).toHaveProperty('internalTxs');
+    // Default env doesn't set supportsDebug, so null + debugUnsupported
+    expect(res.body.data.internalTxs).toBeNull();
+    expect(res.body.data.debugUnsupported).toBe(true);
+  });
+
+  test('FAILED tx → internalTxs field present', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasLimit: 21000n }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(0, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data).toHaveProperty('internalTxs');
+    expect(res.body.data.debugUnsupported).toBe(true);
   });
 });

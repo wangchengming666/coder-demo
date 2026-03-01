@@ -12,17 +12,34 @@ const path = require('path');
 app.use(express.static(path.join(__dirname, '../../frontend/dist')));
 
 const PORT = process.env.PORT || 3000;
-const BSC_RPC_PRIMARY = process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org';
-const BSC_RPC_FALLBACK = process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org';
+
+// Node configurations with supportsDebug flag
+const RPC_NODES = [
+  {
+    url: process.env.BSC_RPC_PRIMARY || 'https://bsc-dataseed1.binance.org',
+    supportsDebug: process.env.BSC_RPC_PRIMARY_SUPPORTS_DEBUG === 'true',
+  },
+  {
+    url: process.env.BSC_RPC_FALLBACK || 'https://bsc-dataseed2.binance.org',
+    supportsDebug: process.env.BSC_RPC_FALLBACK_SUPPORTS_DEBUG === 'true',
+  },
+];
+
+// Keep backward compat env vars
+const BSC_RPC_PRIMARY = RPC_NODES[0].url;
+const BSC_RPC_FALLBACK = RPC_NODES[1].url;
 
 async function getProvider() {
   try {
-    const provider = new ethers.JsonRpcProvider(BSC_RPC_PRIMARY);
+    const provider = new ethers.JsonRpcProvider(RPC_NODES[0].url);
     await provider.getBlockNumber();
-    return provider;
+    return { provider, nodeConfig: RPC_NODES[0] };
   } catch (e) {
     console.warn('Primary RPC failed, switching to fallback:', e.message);
-    return new ethers.JsonRpcProvider(BSC_RPC_FALLBACK);
+    return {
+      provider: new ethers.JsonRpcProvider(RPC_NODES[1].url),
+      nodeConfig: RPC_NODES[1],
+    };
   }
 }
 
@@ -168,6 +185,88 @@ function getPanicSuggestion(code) {
   return suggestions[code] || '合约发生 Panic 错误，请联系合约开发者。';
 }
 
+/**
+ * Recursively flatten a call trace tree into a flat list of internal transactions.
+ * @param {object} callFrame - The call frame from debug_traceTransaction
+ * @returns {Array} Flat list of internal transaction objects
+ */
+function flattenCallTrace(callFrame) {
+  if (!callFrame) return [];
+
+  const result = [];
+
+  const type = (callFrame.type || '').toUpperCase();
+  const valueRaw = callFrame.value ? BigInt(callFrame.value) : 0n;
+  const valueFormatted = ethers.formatEther(valueRaw);
+
+  result.push({
+    type,
+    from: callFrame.from || null,
+    to: callFrame.to || null,
+    value: valueFormatted,
+    valueRaw: valueRaw.toString(),
+    gas: callFrame.gas || '0x0',
+    gasUsed: callFrame.gasUsed || '0x0',
+    success: !callFrame.error,
+    error: callFrame.error || null,
+  });
+
+  // Recursively process nested calls
+  if (Array.isArray(callFrame.calls)) {
+    for (const child of callFrame.calls) {
+      result.push(...flattenCallTrace(child));
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Get internal transactions for a tx hash via debug_traceTransaction.
+ * Returns null if the node doesn't support debug, along with debugUnsupported: true.
+ * @param {string} rpcUrl - The RPC endpoint URL
+ * @param {boolean} supportsDebug - Whether this node supports debug_traceTransaction
+ * @param {string} txHash - Transaction hash
+ * @returns {{ internalTxs: Array|null, debugUnsupported: boolean }}
+ */
+async function getInternalTransactions(rpcUrl, supportsDebug, txHash) {
+  if (!supportsDebug) {
+    return { internalTxs: null, debugUnsupported: true };
+  }
+
+  try {
+    const response = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'debug_traceTransaction',
+        params: [txHash, { tracer: 'callTracer' }],
+      }),
+    });
+
+    const json = await response.json();
+
+    if (json.error) {
+      // Node returned an error (e.g., method not supported)
+      console.warn('debug_traceTransaction error:', json.error.message);
+      return { internalTxs: null, debugUnsupported: true };
+    }
+
+    const callTrace = json.result;
+    if (!callTrace) {
+      return { internalTxs: [], debugUnsupported: false };
+    }
+
+    const internalTxs = flattenCallTrace(callTrace);
+    return { internalTxs, debugUnsupported: false };
+  } catch (err) {
+    console.warn('Failed to fetch debug_traceTransaction:', err.message);
+    return { internalTxs: null, debugUnsupported: true };
+  }
+}
+
 // Main API
 app.get('/api/v1/tx/:txHash', async (req, res) => {
   const { txHash } = req.params;
@@ -182,7 +281,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
   }
 
   try {
-    const provider = await getProvider();
+    const { provider, nodeConfig } = await getProvider();
 
     const [tx, receipt, currentBlock] = await Promise.all([
       provider.getTransaction(txHash),
@@ -240,6 +339,13 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const gasPrice = tx.gasPrice;
     const gasFeeWei = gasUsed * gasPrice;
 
+    // Get internal transactions
+    const { internalTxs, debugUnsupported } = await getInternalTransactions(
+      nodeConfig.url,
+      nodeConfig.supportsDebug,
+      txHash
+    );
+
     const baseData = {
       txHash,
       status: receipt.status === 1 ? 'SUCCESS' : 'FAILED',
@@ -262,6 +368,8 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       inputData: tx.data,
       confirmations: currentBlock - receipt.blockNumber,
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
+      internalTxs,
+      ...(debugUnsupported && { debugUnsupported: true }),
     };
 
     if (receipt.status === 1) {
@@ -297,4 +405,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app };
+module.exports = { app, flattenCallTrace, getInternalTransactions, RPC_NODES };
