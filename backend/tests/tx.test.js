@@ -84,14 +84,14 @@ describe('txHash format validation', () => {
   test('missing 0x prefix → 400', async () => {
     const res = await request(app).get('/api/v1/tx/' + 'a'.repeat(64));
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe(400);
-    expect(res.body.data).toBeNull();
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('INVALID_TX_HASH');
   });
 
   test('too short hash → 400', async () => {
     const res = await request(app).get('/api/v1/tx/0xabc123');
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe(400);
+    expect(res.body.success).toBe(false);
   });
 
   test('too long hash → 400', async () => {
@@ -106,21 +106,21 @@ describe('txHash format validation', () => {
 
   test('400 response has correct structure', async () => {
     const res = await request(app).get('/api/v1/tx/0xshort');
-    expect(res.body).toMatchObject({ code: 400, data: null });
-    expect(typeof res.body.message).toBe('string');
+    expect(res.body).toMatchObject({ success: false, error: { code: 'INVALID_TX_HASH' } });
+    expect(typeof res.body.error.message).toBe('string');
   });
 });
 
 // ─── Not Found ────────────────────────────────────────────────────────────────
 
 describe('Not Found', () => {
-  test('tx === null → code 404 in body', async () => {
+  test('tx === null → 404 with TX_NOT_FOUND', async () => {
     // getTransaction returns null (default)
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
-    expect(res.status).toBe(200);
-    expect(res.body.code).toBe(404);
-    expect(res.body.data).toBeNull();
-    expect(res.body.message).toContain('未找到');
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('TX_NOT_FOUND');
+    expect(res.body.error.message).toContain('未找到');
   });
 });
 
@@ -131,7 +131,7 @@ describe('PENDING status', () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     // getTransactionReceipt stays null (default)
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
-    expect(res.body.code).toBe(200);
+    expect(res.body.success).toBe(true);
     const data = res.body.data;
     expect(data.status).toBe('PENDING');
     expect(data.txHash).toBe(VALID_TX_HASH);
@@ -151,7 +151,7 @@ describe('SUCCESS status', () => {
     mockProvider.getTransaction.mockResolvedValue(makeTx());
     mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
-    expect(res.body.code).toBe(200);
+    expect(res.body.success).toBe(true);
     const data = res.body.data;
     expect(data.status).toBe('SUCCESS');
     expect(data).toHaveProperty('blockNumber');
@@ -339,7 +339,8 @@ describe('Server error handling', () => {
     // Then Promise.all: getTransaction rejects → catch → 500
     const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
     expect(res.status).toBe(500);
-    expect(res.body.code).toBe(500);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
   });
 });
 
