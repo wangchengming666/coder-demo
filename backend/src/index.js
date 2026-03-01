@@ -548,8 +548,10 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
 
     // Compute gasAnalysis - compare tx gas price vs block average
     let gasAnalysis = null;
-    if (block && block.transactions && block.transactions.length > 0) {
-      const txGasPrices = block.transactions
+    // ethers v6: prefetchedTransactions has full tx objects, transactions has hashes
+    const blockTxObjects = block && (block.prefetchedTransactions || (Array.isArray(block.transactions) && block.transactions.filter(t => typeof t === 'object')));
+    if (blockTxObjects && blockTxObjects.length > 0) {
+      const txGasPrices = blockTxObjects
         .map(t => (typeof t === 'object' && t !== null && t.gasPrice != null) ? BigInt(t.gasPrice) : null)
         .filter(p => p !== null);
       if (txGasPrices.length > 0) {
