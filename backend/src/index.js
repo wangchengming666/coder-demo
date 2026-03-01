@@ -157,6 +157,32 @@ function parseNftTransfers(logs) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── Internal Transactions ────────────────────────────────────────────────────
+
+function flattenCallTrace(callFrame) {
+  if (!callFrame) return [];
+  const result = [];
+  const type = (callFrame.type || '').toUpperCase();
+  const valueRaw = callFrame.value ? BigInt(callFrame.value) : 0n;
+  result.push({ type, from: callFrame.from || null, to: callFrame.to || null, value: ethers.formatEther(valueRaw), valueRaw: valueRaw.toString(), gas: callFrame.gas || '0x0', gasUsed: callFrame.gasUsed || '0x0', success: !callFrame.error, error: callFrame.error || null });
+  if (Array.isArray(callFrame.calls)) { for (const child of callFrame.calls) result.push(...flattenCallTrace(child)); }
+  return result;
+}
+
+async function getInternalTransactions(rpcUrl, supportsDebug, txHash) {
+  if (!supportsDebug) return { internalTxs: null, debugUnsupported: true };
+  try {
+    const response = await fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'debug_traceTransaction', params: [txHash, { tracer: 'callTracer' }] }) });
+    const json = await response.json();
+    if (json.error) { console.warn('debug_traceTransaction error:', json.error.message); return { internalTxs: null, debugUnsupported: true }; }
+    const callTrace = json.result;
+    if (!callTrace) return { internalTxs: [], debugUnsupported: false };
+    return { internalTxs: flattenCallTrace(callTrace), debugUnsupported: false };
+  } catch (err) { console.warn('Failed to fetch debug_traceTransaction:', err.message); return { internalTxs: null, debugUnsupported: true }; }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── DEX Swap Parsing ─────────────────────────────────────────────────────────
 
 const SWAP_V2_TOPIC = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37ef4abab29e4e0fee1d3b3bee';
@@ -492,22 +518,27 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
     };
 
-    // Parse ERC-20 transfers, NFT transfers, and DEX swaps
-    const tokenTransfers = await parseTokenTransfers(provider, receipt.logs);
+    // Parse ERC-20 transfers, NFT transfers, DEX swaps, and internal transactions
+    const [tokenTransfers, swaps, { internalTxs, debugUnsupported }] = await Promise.all([
+      parseTokenTransfers(provider, receipt.logs),
+      parseSwapEvents(provider, receipt),
+      getInternalTransactions(BSC_RPC_PRIMARY, true, txHash),
+    ]);
     const nftTransfers = parseNftTransfers(receipt.logs || []);
-    const swaps = await parseSwapEvents(provider, receipt);
 
     if (receipt.status === 1) {
-      return res.json({ success: true, requestId, data: { ...baseData, tokenTransfers, nftTransfers, swaps } });
+      const data = { ...baseData, tokenTransfers, nftTransfers, swaps };
+      if (!debugUnsupported) data.internalTxs = internalTxs;
+      else data.internalTxsNote = 'debug_traceTransaction not supported by this node';
+      return res.json({ success: true, requestId, data });
     }
 
     // Failed — analyze
     const failureInfo = await analyzeFailure(provider, tx, receipt);
-    return res.json({
-      success: true,
-      requestId,
-      data: { ...baseData, tokenTransfers, nftTransfers, swaps, failureInfo },
-    });
+    const data = { ...baseData, tokenTransfers, nftTransfers, swaps, failureInfo };
+    if (!debugUnsupported) data.internalTxs = internalTxs;
+    else data.internalTxsNote = 'debug_traceTransaction not supported by this node';
+    return res.json({ success: true, requestId, data });
 
   } catch (err) {
     console.error(`[${requestId}] Error processing tx:`, err);
