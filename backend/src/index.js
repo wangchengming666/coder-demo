@@ -157,6 +157,11 @@ function parseNftTransfers(logs) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── MEV Detection ────────────────────────────────────────────────────────────
+const { detectSandwichSafe } = require('./mevDetector');
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── Input Data Decode (4byte.directory) ─────────────────────────────────────
 
 const http = require('http');
@@ -582,17 +587,18 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
     };
 
-    // Parse ERC-20 transfers, NFT transfers, DEX swaps, internal txs, and method info
-    const [tokenTransfers, swaps, { internalTxs, debugUnsupported }, methodInfo] = await Promise.all([
+    // Parse ERC-20 transfers, NFT transfers, DEX swaps, internal txs, method info, MEV detection
+    const [tokenTransfers, swaps, { internalTxs, debugUnsupported }, methodInfo, mevInfo] = await Promise.all([
       parseTokenTransfers(provider, receipt.logs),
       parseSwapEvents(provider, receipt),
       getInternalTransactions(BSC_RPC_PRIMARY, true, txHash),
       decodeMethodInfo(tx.data),
+      detectSandwichSafe(provider, tx, receipt),
     ]);
     const nftTransfers = parseNftTransfers(receipt.logs || []);
 
     if (receipt.status === 1) {
-      const data = { ...baseData, gasAnalysis, methodInfo, tokenTransfers, nftTransfers, swaps };
+      const data = { ...baseData, gasAnalysis, methodInfo, mevInfo, tokenTransfers, nftTransfers, swaps };
       if (!debugUnsupported) data.internalTxs = internalTxs;
       else data.internalTxsNote = 'debug_traceTransaction not supported by this node';
       return res.json({ success: true, requestId, data });
@@ -600,7 +606,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
 
     // Failed — analyze
     const failureInfo = await analyzeFailure(provider, tx, receipt);
-    const data = { ...baseData, gasAnalysis, methodInfo, tokenTransfers, nftTransfers, swaps, failureInfo };
+    const data = { ...baseData, gasAnalysis, methodInfo, mevInfo, tokenTransfers, nftTransfers, swaps, failureInfo };
     if (!debugUnsupported) data.internalTxs = internalTxs;
     else data.internalTxsNote = 'debug_traceTransaction not supported by this node';
     return res.json({ success: true, requestId, data });
