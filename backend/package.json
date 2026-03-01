@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "jest tests/tx.test.js --coverage --coverageThreshold='{\"global\":{\"lines\":80}}'",
+    "test": "jest tests/tx.test.js tests/mev.test.js --coverage --coverageThreshold='{\"global\":{\"lines\":80}}'",
     "test:integration": "jest tests/integration.test.js --testTimeout=30000"
   },
   "jest": {

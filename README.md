@@ -14,6 +14,7 @@
 | 交易详情 | From / To / 金额 / Gas / 区块号 / 时间戳 / 确认数 |
 | 失败原因分析 | 自动解析 Revert Reason，给出中文失败原因与修复建议 |
 | 状态分类 | 覆盖 Pending / Success / Failed / Not Found 四种状态 |
+| MEV 夹子攻击检测 | 启发式检测 Sandwich Attack，标注疑似前置/后置交易（仅供参考） |
 | 快捷跳转 | 一键跳转 BscScan 区块浏览器 |
 | RPC 自动切换 | 主节点失败自动切换备用节点 |
 
@@ -32,9 +33,11 @@
 coder-demo/
 ├── backend/
 │   ├── src/
-│   │   └── index.js          # Express 服务入口，含查询逻辑与失败分析
+│   │   ├── index.js          # Express 服务入口，含查询逻辑与失败分析
+│   │   └── mevDetector.js    # MEV 夹子攻击启发式检测模块
 │   ├── tests/
-│   │   └── tx.test.js        # Jest 单元测试（覆盖率 95%+）
+│   │   ├── tx.test.js        # Jest 单元测试（覆盖率 95%+）
+│   │   └── mev.test.js       # MEV 检测模块单元测试
 │   ├── .env                  # 环境变量配置
 │   └── package.json
 └── frontend/
@@ -156,6 +159,29 @@ GET /api/v1/tx/:txHash
 }
 ```
 
+**响应示例 — Swap 交易（额外返回 mevInfo）：**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "txHash": "0xabc123...def456",
+    "status": "SUCCESS",
+    "mevInfo": {
+      "isSuspicious": true,
+      "attackType": "sandwich",
+      "frontRunTx": "0xaaa...",
+      "backRunTx": "0xbbb...",
+      "estimatedLoss": null,
+      "confidence": "high"
+    }
+  }
+}
+```
+
+> ⚠️ **免责声明**：MEV 夹子攻击检测为启发式算法，存在误判，结果仅供参考，不作为法律或财务依据。非 Swap 交易返回 `mevInfo: null`。
+
 **响应状态码：**
 
 | code | 说明 |
@@ -192,6 +218,42 @@ GET /api/v1/tx/:txHash
 | 50 | 调用无效合约 |
 | 65 | 内存分配失败 |
 | 81 | 访问未初始化变量 |
+
+---
+
+## MEV 夹子攻击检测（ISSUE-013）
+
+后端通过分析同区块内的交易序列，启发式检测目标交易是否遭受 Sandwich Attack：
+
+**检测流程：**
+1. 判断目标交易是否为 Swap（匹配已知 DEX 函数选择器）
+2. 获取目标交易所在区块的全量交易列表
+3. 在目标交易前后寻找来自同一地址、同一 Router 合约的 Swap 交易
+4. 若找到前置交易（front-run）和后置交易（back-run），则标记为疑似夹子攻击
+
+**mevInfo 字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| isSuspicious | Boolean | 是否疑似遭受 MEV 攻击 |
+| attackType | String | 攻击类型："sandwich" / "frontrun" / null |
+| frontRunTx | String | 疑似前置交易 TxHash |
+| backRunTx | String | 疑似后置交易 TxHash |
+| estimatedLoss | String | 估算损失（当前版本返回 null，待价格预言机接入） |
+| confidence | String | 置信度："high" / "medium" / "low" |
+
+**支持检测的 Swap 函数选择器（Uniswap V2/V3 & PancakeSwap）：**
+
+| 函数 | 选择器 |
+|------|--------|
+| swapExactTokensForTokens | 0x38ed1739 |
+| swapExactETHForTokens | 0x7ff36ab5 |
+| swapExactTokensForETH | 0x18cbafe5 |
+| exactInputSingle (V3) | 0x414bf389 |
+| exactOutputSingle (V3) | 0xdb3e2198 |
+| 其他 PancakeSwap 变种 | 多个 |
+
+**降级处理：** 检测过程中任何异常均不影响主接口响应，返回 `mevInfo: null`。
 
 ---
 

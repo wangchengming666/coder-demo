@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { ethers } = require('ethers');
+const { detectSandwichSafe, isSwapTransaction } = require('./mevDetector');
 
 const app = express();
 app.use(cors());
@@ -265,15 +266,20 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     };
 
     if (receipt.status === 1) {
-      return res.json({ code: 200, message: 'success', data: baseData });
+      // MEV detection (graceful degradation: never throws)
+      const mevInfo = await detectSandwichSafe(provider, tx, receipt);
+      return res.json({ code: 200, message: 'success', data: { ...baseData, mevInfo } });
     }
 
-    // Failed — analyze
-    const failureInfo = await analyzeFailure(provider, tx, receipt);
+    // Failed — analyze + MEV detection
+    const [failureInfo, mevInfo] = await Promise.all([
+      analyzeFailure(provider, tx, receipt),
+      detectSandwichSafe(provider, tx, receipt),
+    ]);
     return res.json({
       code: 200,
       message: 'success',
-      data: { ...baseData, failureInfo },
+      data: { ...baseData, failureInfo, mevInfo },
     });
 
   } catch (err) {
