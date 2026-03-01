@@ -602,3 +602,56 @@ describe('parseSwapEvents', () => {
     expect(result[0].dex).toBe('Uniswap V3');
   });
 });
+
+// ─── Gas Analysis ─────────────────────────────────────────────────────────────
+
+describe('gasAnalysis field', () => {
+  beforeEach(() => {
+    tokenCache.clear();
+    mockContractInstance.symbol.mockResolvedValue('TEST');
+    mockContractInstance.decimals.mockResolvedValue(18);
+  });
+
+  test('gasAnalysis included when block has transactions', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasPrice: 5000000000n }));
+    const receipt = makeReceipt(1, 21000n);
+    receipt.logs = [];
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    // Block with tx list for avg gas price computation
+    mockProvider.getBlock.mockResolvedValue({
+      timestamp: 1700000000,
+      transactions: [
+        { gasPrice: 4000000000n },
+        { gasPrice: 5000000000n },
+        { gasPrice: 6000000000n },
+      ],
+    });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.gasAnalysis).not.toBeNull();
+    expect(res.body.data.gasAnalysis.level).toBe('normal');
+    expect(res.body.data.gasAnalysis.diff).toBeDefined();
+  });
+
+  test('gasAnalysis is null when block is null', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    const receipt = makeReceipt(1, 21000n);
+    receipt.logs = [];
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    mockProvider.getBlock.mockResolvedValue(null);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.gasAnalysis).toBeNull();
+  });
+
+  test('gasAnalysis level=high when tx gas price is much higher', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasPrice: 10000000000n }));
+    const receipt = makeReceipt(1, 21000n);
+    receipt.logs = [];
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    mockProvider.getBlock.mockResolvedValue({
+      timestamp: 1700000000,
+      transactions: [{ gasPrice: 1000000000n }, { gasPrice: 1000000000n }],
+    });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.gasAnalysis.level).toBe('high');
+  });
+});

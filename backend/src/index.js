@@ -476,8 +476,8 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       });
     }
 
-    // Get block for timestamp
-    const block = await provider.getBlock(receipt.blockNumber);
+    // Get block for timestamp and gas analysis (prefetchTxs=true)
+    const block = await provider.getBlock(receipt.blockNumber, true);
     const timestamp = block ? block.timestamp : null;
 
     // Format datetime in UTC+8
@@ -493,6 +493,23 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const gasUsed = receipt.gasUsed;
     const gasPrice = tx.gasPrice;
     const gasFeeWei = gasUsed * gasPrice;
+
+    // Compute gasAnalysis - compare tx gas price vs block average
+    let gasAnalysis = null;
+    if (block && block.transactions && block.transactions.length > 0) {
+      const txGasPrices = block.transactions
+        .map(t => (typeof t === 'object' && t !== null && t.gasPrice != null) ? BigInt(t.gasPrice) : null)
+        .filter(p => p !== null);
+      if (txGasPrices.length > 0) {
+        const sum = txGasPrices.reduce((a, b) => a + b, 0n);
+        const avg = sum / BigInt(txGasPrices.length);
+        const txGp = BigInt(gasPrice);
+        const diffPct = avg !== 0n ? Number((txGp - avg) * 10000n / avg) / 100 : 0;
+        const sign = diffPct >= 0 ? '+' : '';
+        const level = diffPct < -20 ? 'low' : diffPct > 20 ? 'high' : 'normal';
+        gasAnalysis = { txGasPrice: ethers.formatUnits(txGp, 'gwei'), blockAvgGasPrice: ethers.formatUnits(avg, 'gwei'), diff: `${sign}${diffPct.toFixed(1)}%`, level };
+      }
+    }
 
     const baseData = {
       txHash,
@@ -527,7 +544,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const nftTransfers = parseNftTransfers(receipt.logs || []);
 
     if (receipt.status === 1) {
-      const data = { ...baseData, tokenTransfers, nftTransfers, swaps };
+      const data = { ...baseData, gasAnalysis, tokenTransfers, nftTransfers, swaps };
       if (!debugUnsupported) data.internalTxs = internalTxs;
       else data.internalTxsNote = 'debug_traceTransaction not supported by this node';
       return res.json({ success: true, requestId, data });
@@ -535,7 +552,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
 
     // Failed — analyze
     const failureInfo = await analyzeFailure(provider, tx, receipt);
-    const data = { ...baseData, tokenTransfers, nftTransfers, swaps, failureInfo };
+    const data = { ...baseData, gasAnalysis, tokenTransfers, nftTransfers, swaps, failureInfo };
     if (!debugUnsupported) data.internalTxs = internalTxs;
     else data.internalTxsNote = 'debug_traceTransaction not supported by this node';
     return res.json({ success: true, requestId, data });
