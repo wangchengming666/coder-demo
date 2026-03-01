@@ -33,6 +33,18 @@ const CHAIN_CONFIG = {
     rpcFallback: process.env.ARB_RPC_FALLBACK || 'https://rpc.ankr.com/arbitrum',
     explorerUrl: (txHash) => `https://arbiscan.io/tx/${txHash}`, valueSymbol: 'ETH', decimals: 18,
   },
+  polygon: {
+    name: 'Polygon',
+    rpcPrimary: process.env.POLYGON_RPC_PRIMARY || 'https://polygon-rpc.com',
+    rpcFallback: process.env.POLYGON_RPC_FALLBACK || 'https://rpc.ankr.com/polygon',
+    explorerUrl: (txHash) => `https://polygonscan.com/tx/${txHash}`, valueSymbol: 'MATIC', decimals: 18,
+  },
+  op: {
+    name: 'Optimism',
+    rpcPrimary: process.env.OP_RPC_PRIMARY || 'https://mainnet.optimism.io',
+    rpcFallback: process.env.OP_RPC_FALLBACK || 'https://rpc.ankr.com/optimism',
+    explorerUrl: (txHash) => `https://optimistic.etherscan.io/tx/${txHash}`, valueSymbol: 'ETH', decimals: 18,
+  },
 };
 
 async function getProvider(chain) {
