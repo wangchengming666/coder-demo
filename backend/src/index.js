@@ -222,8 +222,8 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       });
     }
 
-    // Get block for timestamp
-    const block = await provider.getBlock(receipt.blockNumber);
+    // Get block for timestamp and gasAnalysis
+    const block = await provider.getBlock(receipt.blockNumber, true);
     const timestamp = block ? block.timestamp : null;
 
     // Format datetime in UTC+8
@@ -239,6 +239,34 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const gasUsed = receipt.gasUsed;
     const gasPrice = tx.gasPrice;
     const gasFeeWei = gasUsed * gasPrice;
+
+    // Compute gasAnalysis
+    let gasAnalysis = null;
+    if (block && block.transactions && block.transactions.length > 0) {
+      const txGasPrices = block.transactions
+        .map(t => (typeof t === 'object' && t !== null && t.gasPrice != null) ? BigInt(t.gasPrice) : null)
+        .filter(p => p !== null);
+      if (txGasPrices.length > 0) {
+        const sum = txGasPrices.reduce((a, b) => a + b, 0n);
+        const avg = sum / BigInt(txGasPrices.length);
+        const txGp = BigInt(gasPrice);
+        const diffRaw = txGp - avg;
+        // diff percentage = (txGp - avg) / avg * 100, formatted with sign
+        const diffPct = avg !== 0n ? Number(diffRaw * 10000n / avg) / 100 : 0;
+        const sign = diffPct >= 0 ? '+' : '';
+        const diffStr = `${sign}${diffPct.toFixed(1)}%`;
+        let level;
+        if (diffPct < -20) level = 'low';
+        else if (diffPct > 20) level = 'high';
+        else level = 'normal';
+        gasAnalysis = {
+          txGasPrice: ethers.formatUnits(txGp, 'gwei'),
+          blockAvgGasPrice: ethers.formatUnits(avg, 'gwei'),
+          diff: diffStr,
+          level,
+        };
+      }
+    }
 
     const baseData = {
       txHash,
@@ -262,6 +290,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       inputData: tx.data,
       confirmations: currentBlock - receipt.blockNumber,
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
+      ...(gasAnalysis ? { gasAnalysis } : {}),
     };
 
     if (receipt.status === 1) {

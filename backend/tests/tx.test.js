@@ -383,6 +383,108 @@ describe('datetime field', () => {
   });
 });
 
+// ─── gasAnalysis field ───────────────────────────────────────────────────────
+
+describe('gasAnalysis field', () => {
+  function makeBlockWithTxs(gasPrices) {
+    return {
+      timestamp: 1700000000,
+      transactions: gasPrices.map(gp => ({ gasPrice: BigInt(gp) })),
+    };
+  }
+
+  test('PENDING tx → no gasAnalysis', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    // receipt stays null (PENDING)
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('PENDING');
+    expect(res.body.data).not.toHaveProperty('gasAnalysis');
+  });
+
+  test('block with no transactions → no gasAnalysis', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue({ timestamp: 1700000000, transactions: [] });
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data).not.toHaveProperty('gasAnalysis');
+  });
+
+  test('block === null → no gasAnalysis', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue(null);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data).not.toHaveProperty('gasAnalysis');
+  });
+
+  test('tx gasPrice equal to avg → level=normal, diff=+0.0%', async () => {
+    // tx gasPrice = 5 Gwei, avg = 5 Gwei
+    const gpWei = 5000000000n; // 5 Gwei
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasPrice: gpWei }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue(makeBlockWithTxs([gpWei, gpWei, gpWei]));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const ga = res.body.data.gasAnalysis;
+    expect(ga).toBeDefined();
+    expect(ga.level).toBe('normal');
+    expect(ga.diff).toBe('+0.0%');
+    expect(ga.txGasPrice).toBe('5.0');
+    expect(ga.blockAvgGasPrice).toBe('5.0');
+  });
+
+  test('tx gasPrice 15% above avg → level=normal', async () => {
+    // avg = 5 Gwei, tx = 5.75 Gwei (+15%)
+    const avgWei = 5000000000n;
+    const txWei = 5750000000n;
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasPrice: txWei }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue(makeBlockWithTxs([avgWei, avgWei, avgWei]));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.gasAnalysis.level).toBe('normal');
+  });
+
+  test('tx gasPrice >20% above avg → level=high', async () => {
+    // avg = 5 Gwei, tx = 6.5 Gwei (+30%)
+    const avgWei = 5000000000n;
+    const txWei = 6500000000n;
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasPrice: txWei }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue(makeBlockWithTxs([avgWei, avgWei, avgWei]));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const ga = res.body.data.gasAnalysis;
+    expect(ga.level).toBe('high');
+    expect(ga.diff.startsWith('+')).toBe(true);
+  });
+
+  test('tx gasPrice >20% below avg → level=low', async () => {
+    // avg = 5 Gwei, tx = 3.5 Gwei (-30%)
+    const avgWei = 5000000000n;
+    const txWei = 3500000000n;
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasPrice: txWei }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue(makeBlockWithTxs([avgWei, avgWei, avgWei]));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const ga = res.body.data.gasAnalysis;
+    expect(ga.level).toBe('low');
+    expect(ga.diff.startsWith('-')).toBe(true);
+  });
+
+  test('gasAnalysis has correct structure', async () => {
+    const gpWei = 5000000000n;
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ gasPrice: gpWei }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    mockProvider.getBlock.mockResolvedValue(makeBlockWithTxs([gpWei, 6000000000n, 4000000000n]));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const ga = res.body.data.gasAnalysis;
+    expect(ga).toHaveProperty('txGasPrice');
+    expect(ga).toHaveProperty('blockAvgGasPrice');
+    expect(ga).toHaveProperty('diff');
+    expect(ga).toHaveProperty('level');
+    expect(['low', 'normal', 'high']).toContain(ga.level);
+    expect(ga.diff).toMatch(/^[+-]\d+\.\d+%$/);
+  });
+});
+
 // ─── Health endpoint ──────────────────────────────────────────────────────────
 
 describe('Health endpoint', () => {

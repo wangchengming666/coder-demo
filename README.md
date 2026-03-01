@@ -131,10 +131,29 @@ GET /api/v1/tx/:txHash
     "inputData": "0x",
     "confirmations": 500,
     "explorerUrl": "https://bscscan.com/tx/0xabc123...",
-    "datetime": "2026-02-28 21:51:25"
+    "datetime": "2026-02-28 21:51:25",
+    "gasAnalysis": {
+      "txGasPrice": "5.2",
+      "blockAvgGasPrice": "4.5",
+      "diff": "+15.6%",
+      "level": "normal"
+    }
   }
 }
 ```
+
+> **注意：** `gasAnalysis` 字段仅在交易已上链（非 PENDING）且区块包含交易数据时返回。
+
+**gasAnalysis 字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| txGasPrice | String | 该交易 Gas Price（Gwei） |
+| blockAvgGasPrice | String | 所在区块平均 Gas Price（Gwei） |
+| diff | String | 差异百分比，如 "+12.5%" 或 "-5.3%" |
+| level | String | 评级：`low` / `normal` / `high` |
+
+评级规则：低于均价 20% 以上为 `low`，高于均价 20% 以上为 `high`，其余为 `normal`。
 
 **响应示例 — 交易失败（额外返回 failureInfo）：**
 
@@ -231,6 +250,7 @@ issues/ISSUE-<编号>-<简短描述>.md
 ```
 issues/ISSUE-001-add-base-chain-support.md
 issues/ISSUE-002-update-api-params-and-response.md
+issues/ISSUE-011-gas-fee-comparison.md
 ```
 
 ---
