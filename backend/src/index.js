@@ -157,6 +157,53 @@ function parseNftTransfers(logs) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── Input Data Decode (4byte.directory) ─────────────────────────────────────
+
+const http = require('http');
+const https = require('https');
+
+function fetchJson(url, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? https : http;
+    const req = lib.get(url, { headers: { 'User-Agent': 'TxTracer/1.0' } }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
+  });
+}
+
+async function decodeMethodInfo(inputData) {
+  if (!inputData || inputData === '0x' || inputData.length < 10) return null;
+  const selector = inputData.slice(0, 10).toLowerCase();
+  try {
+    const json = await fetchJson(`https://www.4byte.directory/api/v1/signatures/?hex_signature=${selector}`);
+    if (!json.results || json.results.length === 0) return { selector, name: null, signature: null, params: [], decoded: false };
+    const signature = json.results[0].text_signature;
+    const name = signature.split('(')[0];
+    const paramTypesStr = signature.slice(name.length + 1, -1);
+    const paramTypes = paramTypesStr ? paramTypesStr.split(',').map(t => t.trim()) : [];
+    let params = [];
+    if (paramTypes.length > 0 && inputData.length > 10) {
+      try {
+        const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+        const decoded = abiCoder.decode(paramTypes, '0x' + inputData.slice(10));
+        params = paramTypes.map((type, i) => ({ name: `param${i}`, type, value: decoded[i] !== undefined ? decoded[i].toString() : null }));
+      } catch (e) {
+        params = paramTypes.map((type, i) => ({ name: `param${i}`, type, value: null }));
+      }
+    }
+    return { selector, name, signature, params, decoded: true };
+  } catch (e) {
+    console.warn('4byte.directory lookup failed:', e.message);
+    return { selector, name: null, signature: null, params: [], decoded: false };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── Internal Transactions ────────────────────────────────────────────────────
 
 function flattenCallTrace(callFrame) {
@@ -535,16 +582,17 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
     };
 
-    // Parse ERC-20 transfers, NFT transfers, DEX swaps, and internal transactions
-    const [tokenTransfers, swaps, { internalTxs, debugUnsupported }] = await Promise.all([
+    // Parse ERC-20 transfers, NFT transfers, DEX swaps, internal txs, and method info
+    const [tokenTransfers, swaps, { internalTxs, debugUnsupported }, methodInfo] = await Promise.all([
       parseTokenTransfers(provider, receipt.logs),
       parseSwapEvents(provider, receipt),
       getInternalTransactions(BSC_RPC_PRIMARY, true, txHash),
+      decodeMethodInfo(tx.data),
     ]);
     const nftTransfers = parseNftTransfers(receipt.logs || []);
 
     if (receipt.status === 1) {
-      const data = { ...baseData, gasAnalysis, tokenTransfers, nftTransfers, swaps };
+      const data = { ...baseData, gasAnalysis, methodInfo, tokenTransfers, nftTransfers, swaps };
       if (!debugUnsupported) data.internalTxs = internalTxs;
       else data.internalTxsNote = 'debug_traceTransaction not supported by this node';
       return res.json({ success: true, requestId, data });
@@ -552,7 +600,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
 
     // Failed — analyze
     const failureInfo = await analyzeFailure(provider, tx, receipt);
-    const data = { ...baseData, gasAnalysis, tokenTransfers, nftTransfers, swaps, failureInfo };
+    const data = { ...baseData, gasAnalysis, methodInfo, tokenTransfers, nftTransfers, swaps, failureInfo };
     if (!debugUnsupported) data.internalTxs = internalTxs;
     else data.internalTxsNote = 'debug_traceTransaction not supported by this node';
     return res.json({ success: true, requestId, data });
@@ -581,4 +629,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, parseTokenTransfers, parseSwapEvents, parseNftTransfers, getTokenInfo, tokenCache, TOKEN_CACHE_TTL_MS };
+module.exports = { app, parseTokenTransfers, parseSwapEvents, parseNftTransfers, getTokenInfo, tokenCache, TOKEN_CACHE_TTL_MS, decodeMethodInfo, fetchJson };

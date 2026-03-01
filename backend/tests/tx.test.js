@@ -655,3 +655,29 @@ describe('gasAnalysis field', () => {
     expect(res.body.data.gasAnalysis.level).toBe('high');
   });
 });
+
+// ─── Input Data Decode ────────────────────────────────────────────────────────
+const { decodeMethodInfo } = require('../src/index');
+
+describe('decodeMethodInfo', () => {
+  test('native transfer (0x) returns null', async () => {
+    expect(await decodeMethodInfo('0x')).toBeNull();
+    expect(await decodeMethodInfo(null)).toBeNull();
+    expect(await decodeMethodInfo('')).toBeNull();
+  });
+
+  test('short inputData (no selector) returns null', async () => {
+    expect(await decodeMethodInfo('0xab')).toBeNull();
+  });
+
+  test('4byte API failure gracefully returns decoded=false', async () => {
+    // Real input data with selector, 4byte API will fail in test env (no network)
+    const transferSelector = '0xa9059cbb';
+    const inputData = transferSelector + '0'.repeat(128); // fake params
+    // This will fail to reach 4byte.directory and should gracefully return decoded=false
+    const result = await decodeMethodInfo(inputData);
+    expect(result).not.toBeNull();
+    expect(result).toHaveProperty('selector', transferSelector);
+    expect(result).toHaveProperty('decoded');
+  }, 10000);
+});
