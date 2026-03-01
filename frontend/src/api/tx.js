@@ -1,26 +1,10 @@
-/**
- * TxTracer API封装
- */
-
-const BASE_URL = '/api/v1';
-
-/**
- * 查询BSC交易详情
- * @param {string} txHash - 交易哈希
- * @returns {Promise<Object>} 交易数据
- */
-export async function fetchTransaction(txHash) {
-  const response = await fetch(`${BASE_URL}/tx/${encodeURIComponent(txHash)}`);
-  
-  if (!response.ok) {
-    let errMsg = `HTTP ${response.status}`;
-    try {
-      const body = await response.json();
-      errMsg = body.message || errMsg;
-    } catch {}
-    throw new Error(errMsg);
-  }
-
+export async function fetchTransaction(txHash, chain = 'bsc') {
+  const url = `/api/v2/tx/${encodeURIComponent(txHash)}?chain=${encodeURIComponent(chain)}`;
+  const response = await fetch(url);
   const result = await response.json();
-  return result;
+  if (result.success === false) {
+    if (response.status === 404) return { code: 404, message: result.error?.message || '未找到', data: null };
+    return { code: response.status || 400, message: result.error?.message || '查询失败', data: null };
+  }
+  return { code: 0, message: 'success', data: result.data };
 }
