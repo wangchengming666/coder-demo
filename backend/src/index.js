@@ -60,6 +60,58 @@ async function getProvider(chain) {
   }
 }
 
+// ─── ERC-20 Token Transfer Parsing ───────────────────────────────────────────
+
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const ERC20_ABI = [
+  'function symbol() view returns (string)',
+  'function decimals() view returns (uint8)',
+];
+const tokenCache = new Map();
+const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getTokenInfo(provider, contractAddress) {
+  const now = Date.now();
+  const cached = tokenCache.get(contractAddress.toLowerCase());
+  if (cached && now - cached.cachedAt < TOKEN_CACHE_TTL_MS) return { symbol: cached.symbol, decimals: cached.decimals };
+  try {
+    const contract = new ethers.Contract(contractAddress, ERC20_ABI, provider);
+    const [symbol, decimals] = await Promise.all([contract.symbol(), contract.decimals()]);
+    const info = { symbol: String(symbol), decimals: Number(decimals), cachedAt: now };
+    tokenCache.set(contractAddress.toLowerCase(), info);
+    return { symbol: info.symbol, decimals: info.decimals };
+  } catch (e) {
+    return { symbol: 'UNKNOWN', decimals: 18 };
+  }
+}
+
+async function parseTokenTransfers(provider, logs) {
+  if (!logs || logs.length === 0) return [];
+  const transferLogs = logs.filter(
+    (log) => log.topics && log.topics[0] && log.topics[0].toLowerCase() === ERC20_TRANSFER_TOPIC
+  );
+  if (transferLogs.length === 0) return [];
+  const transfers = await Promise.all(transferLogs.map(async (log) => {
+    try {
+      const contractAddress = log.address;
+      const from = '0x' + log.topics[1].slice(26);
+      const to = '0x' + log.topics[2].slice(26);
+      const valueRaw = BigInt(log.data).toString();
+      const { symbol, decimals } = await getTokenInfo(provider, contractAddress);
+      const valueBig = BigInt(log.data);
+      const divisor = BigInt(10) ** BigInt(decimals);
+      const intPart = valueBig / divisor;
+      const fracPart = valueBig % divisor;
+      const fracStr = fracPart.toString().padStart(decimals, '0').replace(/0+$/, '') || '00';
+      const value = `${intPart}.${fracStr.length < 2 ? fracStr.padEnd(2, '0') : fracStr}`;
+      return { contractAddress, from: ethers.getAddress(from), to: ethers.getAddress(to), value, valueRaw, symbol, decimals };
+    } catch (e) { return null; }
+  }));
+  return transfers.filter(Boolean);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const PANIC_CODES = {
   0: '断言失败 (Assert Failed)',
   1: '算术溢出/下溢 (Arithmetic overflow/underflow)',
@@ -342,8 +394,11 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
     };
 
+    // Parse ERC-20 transfers
+    const tokenTransfers = await parseTokenTransfers(provider, receipt.logs);
+
     if (receipt.status === 1) {
-      return res.json({ success: true, requestId, data: baseData });
+      return res.json({ success: true, requestId, data: { ...baseData, tokenTransfers } });
     }
 
     // Failed — analyze
@@ -351,7 +406,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     return res.json({
       success: true,
       requestId,
-      data: { ...baseData, failureInfo },
+      data: { ...baseData, tokenTransfers, failureInfo },
     });
 
   } catch (err) {
@@ -378,4 +433,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app };
+module.exports = { app, parseTokenTransfers, getTokenInfo, tokenCache, TOKEN_CACHE_TTL_MS };

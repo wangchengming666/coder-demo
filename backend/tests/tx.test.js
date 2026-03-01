@@ -18,15 +18,23 @@ const mockProvider = {
 
 const MockJsonRpcProvider = jest.fn(() => mockProvider);
 
-// Mock ethers: keep everything real EXCEPT ethers.JsonRpcProvider
+// Mock contract instance for ERC-20 calls
+const mockContractInstance = {
+  symbol: jest.fn().mockResolvedValue('USDT'),
+  decimals: jest.fn().mockResolvedValue(18),
+};
+
+// Mock ethers: keep everything real EXCEPT ethers.JsonRpcProvider and ethers.Contract
 jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers');
   const MockJRP = jest.fn(() => mockProvider);
+  const MockContract = jest.fn(() => mockContractInstance);
   return {
     ...actual,
     ethers: {
       ...actual.ethers,
       JsonRpcProvider: MockJRP,
+      Contract: MockContract,
     },
   };
 });
@@ -36,7 +44,7 @@ const { ethers: mockedEthers } = require('ethers');
 const VALID_TX_HASH = '0x' + 'a'.repeat(64);
 
 // Load app after mock is configured
-const { app } = require('../src/index');
+const { app, parseTokenTransfers, tokenCache } = require('../src/index');
 
 // Base tx object
 function makeTx(overrides = {}) {
@@ -410,4 +418,113 @@ describe('V2 API - ETH', () => {
   test('EIP-1559 type=2', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx({ type: 2, maxPriorityFeePerGas: 1500000000n })); mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1)); mockProvider.getBlock.mockResolvedValue({ timestamp: 1700000000, baseFeePerGas: 15000000000n }); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=eth`); expect(res.body.data.txType).toBe(2); expect(res.body.data.baseFee).toBeCloseTo(15, 1); expect(res.body.data.maxPriorityFee).toBeCloseTo(1.5, 1); });
   test('EIP-1559 null block', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx({ type: 2, maxPriorityFeePerGas: 1000000000n })); mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1)); mockProvider.getBlock.mockResolvedValue(null); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=eth`); expect(res.body.data.txType).toBe(2); expect(res.body.data.baseFee).toBeNull(); });
   test('eth pending', async () => { mockProvider.getTransaction.mockResolvedValue(makeTx({ type: 2 })); const res = await request(app).get(`/api/v2/tx/${VALID_TX_HASH}?chain=eth`); expect(res.body.data.status).toBe('PENDING'); expect(res.body.data.txType).toBe(2); expect(res.body.data.baseFee).toBeNull(); });
+});
+
+// ─── ERC-20 Token Transfer Parsing ───────────────────────────────────────────
+
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+function makeTransferLog(contractAddress, from, to, valueBigInt) {
+  const padAddress = (addr) => '0x' + '0'.repeat(24) + addr.replace('0x', '').toLowerCase();
+  return {
+    address: contractAddress,
+    topics: [ERC20_TRANSFER_TOPIC, padAddress(from), padAddress(to)],
+    data: '0x' + valueBigInt.toString(16).padStart(64, '0'),
+  };
+}
+
+describe('parseTokenTransfers', () => {
+  beforeEach(() => {
+    tokenCache.clear();
+    mockContractInstance.symbol.mockResolvedValue('USDT');
+    mockContractInstance.decimals.mockResolvedValue(18);
+  });
+
+  test('empty logs returns []', async () => {
+    const result = await parseTokenTransfers(mockProvider, []);
+    expect(result).toEqual([]);
+  });
+
+  test('null logs returns []', async () => {
+    const result = await parseTokenTransfers(mockProvider, null);
+    expect(result).toEqual([]);
+  });
+
+  test('no transfer logs returns []', async () => {
+    const result = await parseTokenTransfers(mockProvider, [{ topics: ['0xdeadbeef'], data: '0x00' }]);
+    expect(result).toEqual([]);
+  });
+
+  test('parses single USDT transfer', async () => {
+    const log = makeTransferLog(
+      '0x55d398326f99059ff775485246999027b3197955',
+      '0x1111111111111111111111111111111111111111',
+      '0x2222222222222222222222222222222222222222',
+      BigInt('1000000000000000000'), // 1 USDT
+    );
+    const result = await parseTokenTransfers(mockProvider, [log]);
+    expect(result).toHaveLength(1);
+    expect(result[0].symbol).toBe('USDT');
+    expect(result[0].decimals).toBe(18);
+    expect(result[0].value).toBe('1.00');
+    expect(result[0].valueRaw).toBe('1000000000000000000');
+  });
+
+  test('caches token info', async () => {
+    const log = makeTransferLog(
+      '0x55d398326f99059ff775485246999027b3197955',
+      '0x1111111111111111111111111111111111111111',
+      '0x2222222222222222222222222222222222222222',
+      BigInt('500000000000000000'),
+    );
+    await parseTokenTransfers(mockProvider, [log]);
+    await parseTokenTransfers(mockProvider, [log]);
+    // symbol() should be called only once (cached)
+    expect(mockContractInstance.symbol).toHaveBeenCalledTimes(1);
+  });
+
+  test('fallback to UNKNOWN on contract error', async () => {
+    mockContractInstance.symbol.mockRejectedValue(new Error('not a token'));
+    const log = makeTransferLog(
+      '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+      '0x1111111111111111111111111111111111111111',
+      '0x2222222222222222222222222222222222222222',
+      BigInt('1000000000000000000'),
+    );
+    const result = await parseTokenTransfers(mockProvider, [log]);
+    expect(result[0].symbol).toBe('UNKNOWN');
+  });
+});
+
+describe('ERC-20 transfers in v1 API response', () => {
+  beforeEach(() => {
+    tokenCache.clear();
+    mockContractInstance.symbol.mockResolvedValue('USDT');
+    mockContractInstance.decimals.mockResolvedValue(18);
+  });
+
+  test('SUCCESS with token transfer includes tokenTransfers', async () => {
+    const log = makeTransferLog(
+      '0x55d398326f99059ff775485246999027b3197955',
+      '0x1111111111111111111111111111111111111111',
+      '0x2222222222222222222222222222222222222222',
+      BigInt('1000000000000000000'),
+    );
+    const receipt = makeReceipt(1, 21000n);
+    receipt.logs = [log];
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.tokenTransfers).toHaveLength(1);
+    expect(res.body.data.tokenTransfers[0].symbol).toBe('USDT');
+  });
+
+  test('SUCCESS with no logs has empty tokenTransfers', async () => {
+    const receipt = makeReceipt(1, 21000n);
+    receipt.logs = [];
+    mockProvider.getTransaction.mockResolvedValue(makeTx());
+    mockProvider.getTransactionReceipt.mockResolvedValue(receipt);
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.tokenTransfers).toEqual([]);
+  });
 });
