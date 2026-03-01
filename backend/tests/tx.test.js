@@ -6,6 +6,44 @@
 
 const request = require('supertest');
 const actualEthers = jest.requireActual('ethers');
+const { EventEmitter } = require('events');
+
+// ─── Mock https for 4byte.directory ──────────────────────────────────────────
+let mock4byteResponse = null; // set per-test: { results: [...] } or null (for error)
+
+jest.mock('https', () => {
+  const EventEmitter = require('events').EventEmitter;
+  return {
+    get: jest.fn((url, opts, callback) => {
+      // Support both (url, callback) and (url, opts, callback)
+      const cb = typeof opts === 'function' ? opts : callback;
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      setImmediate(() => {
+        if (mock4byteResponse === '__TIMEOUT__') {
+          // simulate timeout — just don't emit anything
+          return;
+        }
+        if (mock4byteResponse === '__ERROR__') {
+          req.emit('error', new Error('Network error'));
+          return;
+        }
+        res.emit('data', JSON.stringify(mock4byteResponse || { results: [] }));
+        res.emit('end');
+      });
+      const req = new EventEmitter();
+      req.setTimeout = jest.fn();
+      req.destroy = jest.fn();
+      setImmediate(() => {
+        if (mock4byteResponse === '__ERROR__') {
+          req.emit('error', new Error('Network error'));
+        }
+      });
+      cb(res);
+      return req;
+    }),
+  };
+});
 
 // Shared mock provider
 const mockProvider = {
@@ -65,6 +103,7 @@ function makeReceipt(status = 1, gasUsed = 21000n, overrides = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mock4byteResponse = { results: [] }; // default: not found
   mockProvider.getBlockNumber.mockResolvedValue(1000);
   mockProvider.getTransaction.mockResolvedValue(null);
   mockProvider.getTransactionReceipt.mockResolvedValue(null);
@@ -390,5 +429,98 @@ describe('Health endpoint', () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
+  });
+});
+
+// ─── methodInfo ───────────────────────────────────────────────────────────────
+
+describe('methodInfo - native transfer (inputData=0x)', () => {
+  test('inputData "0x" → methodInfo is null', async () => {
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ data: '0x' }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.code).toBe(200);
+    expect(res.body.data.methodInfo).toBeNull();
+  });
+});
+
+describe('methodInfo - 4byte not found', () => {
+  test('selector not in 4byte → decoded=false, only selector returned', async () => {
+    mock4byteResponse = { results: [] };
+    // transfer(address,uint256) selector = 0xa9059cbb
+    const inputData = '0xa9059cbb' + '0'.repeat(128);
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ data: inputData }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const mi = res.body.data.methodInfo;
+    expect(mi).not.toBeNull();
+    expect(mi.decoded).toBe(false);
+    expect(mi.selector).toBe('0xa9059cbb');
+    expect(mi.name).toBeNull();
+    expect(mi.signature).toBeNull();
+  });
+});
+
+describe('methodInfo - 4byte found and decoded', () => {
+  test('transfer(address,uint256) → decoded=true with correct fields', async () => {
+    // ABI encode: transfer(address, uint256) with address=0xAbCd...0001, amount=1000
+    const abiCoder = actualEthers.AbiCoder.defaultAbiCoder();
+    const encoded = abiCoder.encode(
+      ['address', 'uint256'],
+      ['0xaBCdEf0000000000000000000000000000000001', 1000n]
+    );
+    const inputData = '0xa9059cbb' + encoded.slice(2);
+
+    mock4byteResponse = {
+      results: [{ text_signature: 'transfer(address,uint256)' }],
+    };
+
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ data: inputData }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    const mi = res.body.data.methodInfo;
+    expect(mi.decoded).toBe(true);
+    expect(mi.selector).toBe('0xa9059cbb');
+    expect(mi.name).toBe('transfer');
+    expect(mi.signature).toBe('transfer(address,uint256)');
+    expect(mi.params).toHaveLength(2);
+    expect(mi.params[0].type).toBe('address');
+    expect(mi.params[1].type).toBe('uint256');
+    expect(mi.params[1].value).toBe('1000');
+  });
+});
+
+describe('methodInfo - 4byte API error (degraded)', () => {
+  test('API error → methodInfo has decoded=false, selector still returned', async () => {
+    mock4byteResponse = '__ERROR__';
+    const inputData = '0xa9059cbb' + '0'.repeat(128);
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ data: inputData }));
+    mockProvider.getTransactionReceipt.mockResolvedValue(makeReceipt(1, 21000n));
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.code).toBe(200); // main API still works
+    const mi = res.body.data.methodInfo;
+    expect(mi).not.toBeNull();
+    expect(mi.decoded).toBe(false);
+    expect(mi.selector).toBe('0xa9059cbb');
+  });
+});
+
+describe('methodInfo - PENDING transaction', () => {
+  test('PENDING with inputData → methodInfo included', async () => {
+    mock4byteResponse = {
+      results: [{ text_signature: 'transfer(address,uint256)' }],
+    };
+    const abiCoder = actualEthers.AbiCoder.defaultAbiCoder();
+    const encoded = abiCoder.encode(
+      ['address', 'uint256'],
+      ['0xaBCdEf0000000000000000000000000000000001', 500n]
+    );
+    const inputData = '0xa9059cbb' + encoded.slice(2);
+    mockProvider.getTransaction.mockResolvedValue(makeTx({ data: inputData }));
+    // receipt stays null → PENDING
+    const res = await request(app).get(`/api/v1/tx/${VALID_TX_HASH}`);
+    expect(res.body.data.status).toBe('PENDING');
+    expect(res.body.data.methodInfo).not.toBeNull();
+    expect(res.body.data.methodInfo.name).toBe('transfer');
   });
 });

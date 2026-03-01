@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { ethers } = require('ethers');
+const https = require('https');
+const http = require('http');
 
 const app = express();
 app.use(cors());
@@ -39,6 +41,96 @@ const PANIC_CODES = {
   65: '内存分配失败 (Memory allocation failed)',
   81: '访问未初始化变量 (Access to uninitialized variable)',
 };
+
+/**
+ * Fetch JSON from a URL (supports http and https), with a timeout.
+ */
+function fetchJson(url, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? https : http;
+    const req = lib.get(url, { headers: { 'User-Agent': 'TxTracer/1.0' } }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
+  });
+}
+
+/**
+ * Decode inputData method info using 4byte.directory.
+ * Returns null for native transfers (inputData === '0x' or empty).
+ */
+async function decodeMethodInfo(inputData) {
+  // Native transfer: no input data
+  if (!inputData || inputData === '0x' || inputData.length < 10) {
+    return null;
+  }
+
+  const selector = inputData.slice(0, 10).toLowerCase(); // e.g. "0xa9059cbb"
+
+  try {
+    const apiUrl = `https://www.4byte.directory/api/v1/signatures/?hex_signature=${selector}`;
+    const json = await fetchJson(apiUrl);
+
+    if (!json.results || json.results.length === 0) {
+      // Not found in 4byte directory
+      return {
+        selector,
+        name: null,
+        signature: null,
+        params: [],
+        decoded: false,
+      };
+    }
+
+    // Use the first (most common) result
+    const signature = json.results[0].text_signature; // e.g. "transfer(address,uint256)"
+    const name = signature.split('(')[0];
+
+    // Parse param types from signature
+    const paramTypesStr = signature.slice(name.length + 1, -1); // everything inside ()
+    const paramTypes = paramTypesStr ? paramTypesStr.split(',').map(t => t.trim()) : [];
+
+    // Decode param values from inputData (skip first 4 bytes)
+    let params = [];
+    if (paramTypes.length > 0 && inputData.length > 10) {
+      try {
+        const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+        const decoded = abiCoder.decode(paramTypes, '0x' + inputData.slice(10));
+        params = paramTypes.map((type, i) => ({
+          name: `param${i}`,
+          type,
+          value: decoded[i] !== undefined ? decoded[i].toString() : null,
+        }));
+      } catch (e) {
+        // ABI decode failed — still return partial info
+        params = paramTypes.map((type, i) => ({ name: `param${i}`, type, value: null }));
+      }
+    }
+
+    return {
+      selector,
+      name,
+      signature,
+      params,
+      decoded: true,
+    };
+  } catch (e) {
+    // 4byte API call failed — degrade gracefully
+    console.warn('4byte.directory lookup failed:', e.message);
+    return {
+      selector,
+      name: null,
+      signature: null,
+      params: [],
+      decoded: false,
+    };
+  }
+}
 
 async function analyzeFailure(provider, tx, receipt) {
   const gasUsed = receipt.gasUsed;
@@ -201,6 +293,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
 
     // PENDING
     if (!receipt) {
+      const methodInfo = await decodeMethodInfo(tx.data);
       return res.json({
         code: 200,
         message: 'success',
@@ -217,6 +310,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
           gasPriceUnit: 'Gwei',
           nonce: tx.nonce,
           inputData: tx.data,
+          methodInfo,
           explorerUrl: `https://bscscan.com/tx/${txHash}`,
         },
       });
@@ -240,6 +334,9 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     const gasPrice = tx.gasPrice;
     const gasFeeWei = gasUsed * gasPrice;
 
+    // Decode method info (best-effort, non-blocking)
+    const methodInfo = await decodeMethodInfo(tx.data);
+
     const baseData = {
       txHash,
       status: receipt.status === 1 ? 'SUCCESS' : 'FAILED',
@@ -260,6 +357,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       gasFeeSymbol: 'BNB',
       nonce: tx.nonce,
       inputData: tx.data,
+      methodInfo,
       confirmations: currentBlock - receipt.blockNumber,
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
     };

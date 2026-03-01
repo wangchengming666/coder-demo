@@ -128,7 +128,17 @@ GET /api/v1/tx/:txHash
     "gasFee": "0.000063",
     "gasFeeSymbol": "BNB",
     "nonce": 88,
-    "inputData": "0x",
+    "inputData": "0xa9059cbb000000000000000000000000abcdef...0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+    "methodInfo": {
+      "selector": "0xa9059cbb",
+      "name": "transfer",
+      "signature": "transfer(address,uint256)",
+      "params": [
+        { "name": "param0", "type": "address", "value": "0xAbCdEf..." },
+        { "name": "param1", "type": "uint256", "value": "1000000000000000000" }
+      ],
+      "decoded": true
+    },
     "confirmations": 500,
     "explorerUrl": "https://bscscan.com/tx/0xabc123...",
     "datetime": "2026-02-28 21:51:25"
@@ -196,6 +206,25 @@ GET /api/v1/tx/:txHash
 ---
 
 ## 字段说明
+
+### methodInfo 字段
+
+所有包含 `inputData` 的响应均返回 `methodInfo` 字段，用于展示合约方法的可读化信息：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| selector | string | 4字节函数选择器，如 `"0xa9059cbb"` |
+| name | string \| null | 方法名，如 `"transfer"` |
+| signature | string \| null | 完整函数签名，如 `"transfer(address,uint256)"` |
+| params | array | 参数列表，每项包含 `name`、`type`、`value` |
+| decoded | boolean | 是否成功解码 |
+
+**边界情况：**
+- `inputData` 为 `"0x"`（原生 BNB 转账）时，`methodInfo` 返回 `null`
+- 4byte.directory 查询不到签名时，`decoded=false`，只返回 `selector`
+- 4byte.directory 接口调用失败时，自动降级，不影响主接口返回
+
+---
 
 ### datetime 字段
 所有包含区块信息的响应（SUCCESS / FAILED）均返回 `datetime` 字段：
