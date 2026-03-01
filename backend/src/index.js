@@ -27,6 +27,12 @@ const CHAIN_CONFIG = {
     name: 'Ethereum', rpcPrimary: ETH_RPC_PRIMARY, rpcFallback: ETH_RPC_FALLBACK,
     explorerUrl: (txHash) => `https://etherscan.io/tx/${txHash}`, valueSymbol: 'ETH', decimals: 18,
   },
+  arb: {
+    name: 'Arbitrum One',
+    rpcPrimary: process.env.ARB_RPC_PRIMARY || 'https://arb1.arbitrum.io/rpc',
+    rpcFallback: process.env.ARB_RPC_FALLBACK || 'https://rpc.ankr.com/arbitrum',
+    explorerUrl: (txHash) => `https://arbiscan.io/tx/${txHash}`, valueSymbol: 'ETH', decimals: 18,
+  },
 };
 
 async function getProvider(chain) {
@@ -208,6 +214,11 @@ app.get('/api/v2/tx/:txHash', async (req, res) => {
     }
     const data = { txHash, chain, chainName: chainConfig.name, status, value: { amount: ethers.formatEther(tx.value), symbol: chainConfig.valueSymbol, raw: tx.value.toString(), decimals: chainConfig.decimals }, timestamp, explorerUrl: chainConfig.explorerUrl(txHash) };
     if (chain === 'eth') { data.txType = txType; data.baseFee = baseFee; data.maxPriorityFee = maxPriorityFee; }
+    if (chain === 'arb' && receipt && receipt.l1Fee != null) {
+      const l1FeeRaw = BigInt(receipt.l1Fee.toString());
+      data.l1Fee = ethers.formatEther(l1FeeRaw);
+      data.l1FeeRaw = l1FeeRaw.toString();
+    }
     return res.json({ success: true, data });
   } catch (err) {
     console.error('Error processing v2 tx:', err);
