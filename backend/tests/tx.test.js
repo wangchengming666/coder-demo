@@ -528,3 +528,77 @@ describe('ERC-20 transfers in v1 API response', () => {
     expect(res.body.data.tokenTransfers).toEqual([]);
   });
 });
+
+// ─── DEX Swap Parsing ─────────────────────────────────────────────────────────
+const { parseSwapEvents } = require('../src/index');
+
+const SWAP_V2_TOPIC = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37ef4abab29e4e0fee1d3b3bee';
+const SWAP_V3_TOPIC = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
+
+const { ethers: realEthers } = jest.requireActual('ethers');
+
+function encodeV2SwapData(a0In, a1In, a0Out, a1Out) {
+  const abiCoder = realEthers.AbiCoder.defaultAbiCoder();
+  return abiCoder.encode(['uint256', 'uint256', 'uint256', 'uint256'], [a0In, a1In, a0Out, a1Out]);
+}
+
+function encodeV3SwapData(amount0, amount1) {
+  const abiCoder = realEthers.AbiCoder.defaultAbiCoder();
+  return abiCoder.encode(['int256', 'int256', 'uint160', 'uint128', 'int24'], [amount0, amount1, 0n, 0n, 0]);
+}
+
+describe('parseSwapEvents', () => {
+  const TOKEN0 = '0x' + '1'.repeat(40);
+  const TOKEN1 = '0x' + '2'.repeat(40);
+  const POOL = '0x' + '3'.repeat(40);
+
+  beforeEach(() => {
+    tokenCache.clear();
+    mockContractInstance.symbol.mockResolvedValue('USDT');
+    mockContractInstance.decimals.mockResolvedValue(18);
+  });
+
+  const makeSwapReceipt = (topic, data) => ({
+    logs: [{
+      address: POOL,
+      topics: [topic, '0x' + '0'.repeat(64), '0x' + '0'.repeat(64)],
+      data,
+    }],
+  });
+
+  test('no logs returns []', async () => {
+    const result = await parseSwapEvents(mockProvider, { logs: [] });
+    expect(result).toEqual([]);
+  });
+
+  test('V2 swap - token0 in', async () => {
+    // Mock pool contract for token0/token1
+    const poolMock = { token0: jest.fn().mockResolvedValue(TOKEN0), token1: jest.fn().mockResolvedValue(TOKEN1) };
+    const { ethers: mockedEthers2 } = require('ethers');
+    mockedEthers2.Contract = jest.fn((addr) => {
+      if (addr === POOL) return poolMock;
+      return mockContractInstance;
+    });
+    const data = encodeV2SwapData(1000n, 0n, 0n, 2000n);
+    const receipt = makeSwapReceipt(SWAP_V2_TOPIC, data);
+    const result = await parseSwapEvents(mockProvider, receipt);
+    expect(result).toHaveLength(1);
+    expect(result[0].dex).toContain('V2');
+    expect(result[0].tokenIn.symbol).toBe('USDT');
+    expect(result[0].tokenOut.symbol).toBe('USDT');
+  });
+
+  test('V3 swap - amount0 positive', async () => {
+    const poolMock = { token0: jest.fn().mockResolvedValue(TOKEN0), token1: jest.fn().mockResolvedValue(TOKEN1) };
+    const { ethers: mockedEthers2 } = require('ethers');
+    mockedEthers2.Contract = jest.fn((addr) => {
+      if (addr === POOL) return poolMock;
+      return mockContractInstance;
+    });
+    const data = encodeV3SwapData(1000n, -2000n);
+    const receipt = makeSwapReceipt(SWAP_V3_TOPIC, data);
+    const result = await parseSwapEvents(mockProvider, receipt);
+    expect(result).toHaveLength(1);
+    expect(result[0].dex).toBe('Uniswap V3');
+  });
+});

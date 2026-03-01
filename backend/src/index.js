@@ -157,6 +157,59 @@ function parseNftTransfers(logs) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── DEX Swap Parsing ─────────────────────────────────────────────────────────
+
+const SWAP_V2_TOPIC = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37ef4abab29e4e0fee1d3b3bee';
+const SWAP_V3_TOPIC = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
+const POOL_ABI = ['function token0() view returns (address)', 'function token1() view returns (address)'];
+
+async function parseSwapEvents(provider, receipt) {
+  const swaps = [];
+  const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+  for (const log of (receipt.logs || [])) {
+    if (!log.topics || log.topics.length === 0) continue;
+    const topic0 = log.topics[0].toLowerCase();
+    if (topic0 === SWAP_V2_TOPIC) {
+      try {
+        const [amount0In, amount1In, amount0Out, amount1Out] = abiCoder.decode(['uint256', 'uint256', 'uint256', 'uint256'], log.data);
+        const poolContract = new ethers.Contract(log.address, POOL_ABI, provider);
+        const [token0, token1] = await Promise.all([poolContract.token0().catch(() => null), poolContract.token1().catch(() => null)]);
+        if (!token0 || !token1) continue;
+        const [info0, info1] = await Promise.all([getTokenInfo(provider, token0), getTokenInfo(provider, token1)]);
+        let tokenIn, tokenOut;
+        if (amount0In > 0n) {
+          tokenIn = { symbol: info0.symbol, amount: ethers.formatUnits(amount0In, info0.decimals), contractAddress: token0 };
+          tokenOut = { symbol: info1.symbol, amount: ethers.formatUnits(amount1Out, info1.decimals), contractAddress: token1 };
+        } else {
+          tokenIn = { symbol: info1.symbol, amount: ethers.formatUnits(amount1In, info1.decimals), contractAddress: token1 };
+          tokenOut = { symbol: info0.symbol, amount: ethers.formatUnits(amount0Out, info0.decimals), contractAddress: token0 };
+        }
+        swaps.push({ dex: 'PancakeSwap V2 / Uniswap V2', poolAddress: log.address, tokenIn, tokenOut });
+      } catch (e) { console.warn('V2 swap parse error:', e.message); }
+    } else if (topic0 === SWAP_V3_TOPIC) {
+      try {
+        const [amount0, amount1] = abiCoder.decode(['int256', 'int256', 'uint160', 'uint128', 'int24'], log.data);
+        const poolContract = new ethers.Contract(log.address, POOL_ABI, provider);
+        const [token0, token1] = await Promise.all([poolContract.token0().catch(() => null), poolContract.token1().catch(() => null)]);
+        if (!token0 || !token1) continue;
+        const [info0, info1] = await Promise.all([getTokenInfo(provider, token0), getTokenInfo(provider, token1)]);
+        let tokenIn, tokenOut;
+        if (amount0 > 0n) {
+          tokenIn = { symbol: info0.symbol, amount: ethers.formatUnits(amount0, info0.decimals), contractAddress: token0 };
+          tokenOut = { symbol: info1.symbol, amount: ethers.formatUnits(-amount1, info1.decimals), contractAddress: token1 };
+        } else {
+          tokenIn = { symbol: info1.symbol, amount: ethers.formatUnits(amount1, info1.decimals), contractAddress: token1 };
+          tokenOut = { symbol: info0.symbol, amount: ethers.formatUnits(-amount0, info0.decimals), contractAddress: token0 };
+        }
+        swaps.push({ dex: 'Uniswap V3', poolAddress: log.address, tokenIn, tokenOut });
+      } catch (e) { console.warn('V3 swap parse error:', e.message); }
+    }
+  }
+  return swaps;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const PANIC_CODES = {
   0: '断言失败 (Assert Failed)',
   1: '算术溢出/下溢 (Arithmetic overflow/underflow)',
@@ -439,12 +492,13 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
       explorerUrl: `https://bscscan.com/tx/${txHash}`,
     };
 
-    // Parse ERC-20 transfers and NFT transfers
+    // Parse ERC-20 transfers, NFT transfers, and DEX swaps
     const tokenTransfers = await parseTokenTransfers(provider, receipt.logs);
     const nftTransfers = parseNftTransfers(receipt.logs || []);
+    const swaps = await parseSwapEvents(provider, receipt);
 
     if (receipt.status === 1) {
-      return res.json({ success: true, requestId, data: { ...baseData, tokenTransfers, nftTransfers } });
+      return res.json({ success: true, requestId, data: { ...baseData, tokenTransfers, nftTransfers, swaps } });
     }
 
     // Failed — analyze
@@ -452,7 +506,7 @@ app.get('/api/v1/tx/:txHash', async (req, res) => {
     return res.json({
       success: true,
       requestId,
-      data: { ...baseData, tokenTransfers, nftTransfers, failureInfo },
+      data: { ...baseData, tokenTransfers, nftTransfers, swaps, failureInfo },
     });
 
   } catch (err) {
@@ -479,4 +533,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, parseTokenTransfers, getTokenInfo, tokenCache, TOKEN_CACHE_TTL_MS };
+module.exports = { app, parseTokenTransfers, parseSwapEvents, parseNftTransfers, getTokenInfo, tokenCache, TOKEN_CACHE_TTL_MS };
